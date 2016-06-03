@@ -1,0 +1,4138 @@
+diff --git a/include/linux/lwtunnel.h b/include/linux/lwtunnel.h
+new file mode 100644
+index 0000000..97f32f8
+--- /dev/null
++++ b/include/linux/lwtunnel.h
+@@ -0,0 +1,6 @@
++#ifndef _LINUX_LWTUNNEL_H_
++#define _LINUX_LWTUNNEL_H_
++
++#include <uapi/linux/lwtunnel.h>
++
++#endif /* _LINUX_LWTUNNEL_H_ */
+diff --git a/include/linux/mpls_iptunnel.h b/include/linux/mpls_iptunnel.h
+new file mode 100644
+index 0000000..ef29eb2
+--- /dev/null
++++ b/include/linux/mpls_iptunnel.h
+@@ -0,0 +1,6 @@
++#ifndef _LINUX_MPLS_IPTUNNEL_H
++#define _LINUX_MPLS_IPTUNNEL_H
++
++#include <uapi/linux/mpls_iptunnel.h>
++
++#endif  /* _LINUX_MPLS_IPTUNNEL_H */
+diff --git a/include/linux/skbuff.h b/include/linux/skbuff.h
+index f15154a..f0b9d0c 100644
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -3453,5 +3453,6 @@ static inline unsigned int skb_gso_network_seglen(const struct sk_buff *skb)
+ 			       skb_network_header(skb);
+ 	return hdr_len + skb_gso_transport_seglen(skb);
+ }
++
+ #endif	/* __KERNEL__ */
+ #endif	/* _LINUX_SKBUFF_H */
+diff --git a/include/net/dst.h b/include/net/dst.h
+index 0fb99a2..8bd4fbe 100644
+--- a/include/net/dst.h
++++ b/include/net/dst.h
+@@ -57,6 +57,7 @@ struct dst_entry {
+ #define DST_FAKE_RTABLE		0x0040
+ #define DST_XFRM_TUNNEL		0x0080
+ #define DST_XFRM_QUEUE		0x0100
++#define DST_METADATA		0x0200
+ 
+ 	unsigned short		pending_confirm;
+ 
+@@ -374,6 +375,9 @@ static inline int dst_discard(struct sk_buff *skb)
+ }
+ void *dst_alloc(struct dst_ops *ops, struct net_device *dev, int initial_ref,
+ 		int initial_obsolete, unsigned short flags);
++void dst_init(struct dst_entry *dst, struct dst_ops *ops,
++	      struct net_device *dev, int initial_ref, int initial_obsolete,
++	      unsigned short flags);
+ void __dst_free(struct dst_entry *dst);
+ struct dst_entry *dst_destroy(struct dst_entry *dst);
+ 
+@@ -475,7 +479,7 @@ static inline struct dst_entry *dst_check(struct dst_entry *dst, u32 cookie)
+ 	return dst;
+ }
+ 
+-void dst_init(void);
++void dst_subsys_init(void);
+ 
+ /* Flags for xfrm_lookup flags argument. */
+ enum {
+diff --git a/include/net/dst_metadata.h b/include/net/dst_metadata.h
+new file mode 100644
+index 0000000..7b03068
+--- /dev/null
++++ b/include/net/dst_metadata.h
+@@ -0,0 +1,55 @@
++#ifndef __NET_DST_METADATA_H
++#define __NET_DST_METADATA_H 1
++
++#include <linux/skbuff.h>
++#include <net/ip_tunnels.h>
++#include <net/dst.h>
++
++struct metadata_dst {
++	struct dst_entry		dst;
++	size_t				opts_len;
++	union {
++		struct ip_tunnel_info	tun_info;
++	} u;
++};
++
++static inline struct metadata_dst *skb_metadata_dst(struct sk_buff *skb)
++{
++	struct metadata_dst *md_dst = (struct metadata_dst *) skb_dst(skb);
++
++	if (md_dst && md_dst->dst.flags & DST_METADATA)
++		return md_dst;
++
++	return NULL;
++}
++
++static inline struct ip_tunnel_info *skb_tunnel_info(struct sk_buff *skb,
++						     int family)
++{
++	struct metadata_dst *md_dst = skb_metadata_dst(skb);
++	struct rtable *rt;
++
++	if (md_dst)
++		return &md_dst->u.tun_info;
++
++	switch (family) {
++	case AF_INET:
++		rt = (struct rtable *)skb_dst(skb);
++		if (rt && rt->rt_lwtstate)
++			return lwt_tun_info(rt->rt_lwtstate);
++		break;
++	}
++
++	return NULL;
++}
++
++static inline bool skb_valid_dst(const struct sk_buff *skb)
++{
++	struct dst_entry *dst = skb_dst(skb);
++
++	return dst && !(dst->flags & DST_METADATA);
++}
++
++struct metadata_dst *metadata_dst_alloc(u8 optslen, gfp_t flags);
++
++#endif /* __NET_DST_METADATA_H */
+diff --git a/include/net/fib_rules.h b/include/net/fib_rules.h
+index 6d67383..822ed1e 100644
+--- a/include/net/fib_rules.h
++++ b/include/net/fib_rules.h
+@@ -19,6 +19,7 @@ struct fib_rule {
+ 	u8			action;
+ 	/* 3 bytes hole, try to use */
+ 	u32			target;
++	__be64			tun_id;
+ 	struct fib_rule __rcu	*ctarget;
+ 	struct net		*fr_net;
+ 
+diff --git a/include/net/flow.h b/include/net/flow.h
+index 8109a15..3098ae3 100644
+--- a/include/net/flow.h
++++ b/include/net/flow.h
+@@ -19,6 +19,10 @@
+ 
+ #define LOOPBACK_IFINDEX	1
+ 
++struct flowi_tunnel {
++	__be64			tun_id;
++};
++
+ struct flowi_common {
+ 	int	flowic_oif;
+ 	int	flowic_iif;
+@@ -30,6 +34,7 @@ struct flowi_common {
+ #define FLOWI_FLAG_ANYSRC		0x01
+ #define FLOWI_FLAG_KNOWN_NH		0x02
+ 	__u32	flowic_secid;
++	struct flowi_tunnel flowic_tun_key;
+ };
+ 
+ union flowi_uli {
+@@ -66,6 +71,7 @@ struct flowi4 {
+ #define flowi4_proto		__fl_common.flowic_proto
+ #define flowi4_flags		__fl_common.flowic_flags
+ #define flowi4_secid		__fl_common.flowic_secid
++#define flowi4_tun_key		__fl_common.flowic_tun_key
+ 
+ 	/* (saddr,daddr) must be grouped, same order as in IP header */
+ 	__be32			saddr;
+@@ -95,6 +101,7 @@ static inline void flowi4_init_output(struct flowi4 *fl4, int oif,
+ 	fl4->flowi4_proto = proto;
+ 	fl4->flowi4_flags = flags;
+ 	fl4->flowi4_secid = 0;
++	fl4->flowi4_tun_key.tun_id = 0;
+ 	fl4->daddr = daddr;
+ 	fl4->saddr = saddr;
+ 	fl4->fl4_dport = dport;
+@@ -165,6 +172,7 @@ struct flowi {
+ #define flowi_proto	u.__fl_common.flowic_proto
+ #define flowi_flags	u.__fl_common.flowic_flags
+ #define flowi_secid	u.__fl_common.flowic_secid
++#define flowi_tun_key	u.__fl_common.flowic_tun_key
+ } __attribute__((__aligned__(BITS_PER_LONG/8)));
+ 
+ static inline struct flowi *flowi4_to_flowi(struct flowi4 *fl4)
+diff --git a/include/net/ip6_fib.h b/include/net/ip6_fib.h
+index 20e80fa..d702ad2 100644
+--- a/include/net/ip6_fib.h
++++ b/include/net/ip6_fib.h
+@@ -51,6 +51,8 @@ struct fib6_config {
+ 	struct nlattr	*fc_mp;
+ 
+ 	struct nl_info	fc_nlinfo;
++	struct nlattr	*fc_encap;
++	u16		fc_encap_type;
+ };
+ 
+ struct fib6_node {
+@@ -127,6 +129,7 @@ struct rt6_info {
+ 	/* more non-fragment space at head required */
+ 	unsigned short			rt6i_nfheader_len;
+ 	u8				rt6i_protocol;
++	struct lwtunnel_state		*rt6i_lwtstate;
+ };
+ 
+ static inline struct inet_peer *rt6_peer_ptr(struct rt6_info *rt)
+diff --git a/include/net/ip_fib.h b/include/net/ip_fib.h
+index 54271ed..16d1b29 100644
+--- a/include/net/ip_fib.h
++++ b/include/net/ip_fib.h
+@@ -44,7 +44,9 @@ struct fib_config {
+ 	u32			fc_flow;
+ 	u32			fc_nlflags;
+ 	struct nl_info		fc_nlinfo;
+- };
++	struct nlattr		*fc_encap;
++	u16			fc_encap_type;
++};
+ 
+ struct fib_info;
+ struct rtable;
+@@ -89,6 +91,7 @@ struct fib_nh {
+ 	struct rtable __rcu * __percpu *nh_pcpu_rth_output;
+ 	struct rtable __rcu	*nh_rth_input;
+ 	struct fnhe_hash_bucket	__rcu *nh_exceptions;
++	struct lwtunnel_state	*nh_lwtstate;
+ };
+ 
+ /*
+diff --git a/include/net/ip_tunnels.h b/include/net/ip_tunnels.h
+index d8214cb..0a5a776 100644
+--- a/include/net/ip_tunnels.h
++++ b/include/net/ip_tunnels.h
+@@ -9,9 +9,9 @@
+ #include <net/dsfield.h>
+ #include <net/gro_cells.h>
+ #include <net/inet_ecn.h>
+-#include <net/ip.h>
+ #include <net/netns/generic.h>
+ #include <net/rtnetlink.h>
++#include <net/lwtunnel.h>
+ 
+ #if IS_ENABLED(CONFIG_IPV6)
+ #include <net/ipv6.h>
+@@ -22,6 +22,37 @@
+ /* Keep error state on tunnel for 30 sec */
+ #define IPTUNNEL_ERR_TIMEO	(30*HZ)
+ 
++/* Used to memset ip_tunnel padding. */
++#define IP_TUNNEL_KEY_SIZE					\
++	(offsetof(struct ip_tunnel_key, tp_dst) +		\
++	 FIELD_SIZEOF(struct ip_tunnel_key, tp_dst))
++
++struct ip_tunnel_key {
++	__be64			tun_id;
++	__be32			ipv4_src;
++	__be32			ipv4_dst;
++	__be16			tun_flags;
++	__u8			ipv4_tos;
++	__u8			ipv4_ttl;
++	__be16			tp_src;
++	__be16			tp_dst;
++} __packed __aligned(4); /* Minimize padding. */
++
++/* Indicates whether the tunnel info structure represents receive
++ * or transmit tunnel parameters.
++ */
++enum {
++	IP_TUNNEL_INFO_RX,
++	IP_TUNNEL_INFO_TX,
++};
++
++struct ip_tunnel_info {
++	struct ip_tunnel_key	key;
++	const void		*options;
++	u8			options_len;
++	u8			mode;
++};
++
+ /* 6rd prefix/relay information */
+ #ifdef CONFIG_IPV6_SIT_6RD
+ struct ip_tunnel_6rd_parm {
+@@ -136,6 +167,47 @@ int ip_tunnel_encap_add_ops(const struct ip_tunnel_encap_ops *op,
+ int ip_tunnel_encap_del_ops(const struct ip_tunnel_encap_ops *op,
+ 			    unsigned int num);
+ 
++static inline void __ip_tunnel_info_init(struct ip_tunnel_info *tun_info,
++					 __be32 saddr, __be32 daddr,
++					 u8 tos, u8 ttl,
++					 __be16 tp_src, __be16 tp_dst,
++					 __be64 tun_id, __be16 tun_flags,
++					 const void *opts, u8 opts_len)
++{
++	tun_info->key.tun_id = tun_id;
++	tun_info->key.ipv4_src = saddr;
++	tun_info->key.ipv4_dst = daddr;
++	tun_info->key.ipv4_tos = tos;
++	tun_info->key.ipv4_ttl = ttl;
++	tun_info->key.tun_flags = tun_flags;
++
++	/* For the tunnel types on the top of IPsec, the tp_src and tp_dst of
++	 * the upper tunnel are used.
++	 * E.g: GRE over IPSEC, the tp_src and tp_port are zero.
++	 */
++	tun_info->key.tp_src = tp_src;
++	tun_info->key.tp_dst = tp_dst;
++
++	/* Clear struct padding. */
++	if (sizeof(tun_info->key) != IP_TUNNEL_KEY_SIZE)
++		memset((unsigned char *)&tun_info->key + IP_TUNNEL_KEY_SIZE,
++		       0, sizeof(tun_info->key) - IP_TUNNEL_KEY_SIZE);
++
++	tun_info->options = opts;
++	tun_info->options_len = opts_len;
++}
++
++static inline void ip_tunnel_info_init(struct ip_tunnel_info *tun_info,
++				       const struct iphdr *iph,
++				       __be16 tp_src, __be16 tp_dst,
++				       __be64 tun_id, __be16 tun_flags,
++				       const void *opts, u8 opts_len)
++{
++	__ip_tunnel_info_init(tun_info, iph->saddr, iph->daddr,
++			      iph->tos, iph->ttl, tp_src, tp_dst,
++			      tun_id, tun_flags, opts, opts_len);
++}
++
+ #ifdef CONFIG_INET
+ 
+ int ip_tunnel_init(struct net_device *dev);
+@@ -221,6 +293,27 @@ static inline void iptunnel_xmit_stats(int err,
+ 	}
+ }
+ 
++static inline void *ip_tunnel_info_opts(struct ip_tunnel_info *info, size_t n)
++{
++	return info + 1;
++}
++
++static inline struct ip_tunnel_info *lwt_tun_info(struct lwtunnel_state *lwtstate)
++{
++	return (struct ip_tunnel_info *)lwtstate->data;
++}
++
++extern struct static_key ip_tunnel_metadata_cnt;
++
++/* Returns > 0 if metadata should be collected */
++static inline int ip_tunnel_collect_metadata(void)
++{
++	return static_key_false(&ip_tunnel_metadata_cnt);
++}
++
++void ip_tunnel_need_metadata(void);
++void ip_tunnel_unneed_metadata(void);
++
+ #endif /* CONFIG_INET */
+ 
+ #endif /* __NET_IP_TUNNELS_H */
+diff --git a/include/net/lwtunnel.h b/include/net/lwtunnel.h
+new file mode 100644
+index 0000000..918e03c
+--- /dev/null
++++ b/include/net/lwtunnel.h
+@@ -0,0 +1,144 @@
++#ifndef __NET_LWTUNNEL_H
++#define __NET_LWTUNNEL_H 1
++
++#include <linux/lwtunnel.h>
++#include <linux/netdevice.h>
++#include <linux/skbuff.h>
++#include <linux/types.h>
++#include <net/route.h>
++
++#define LWTUNNEL_HASH_BITS   7
++#define LWTUNNEL_HASH_SIZE   (1 << LWTUNNEL_HASH_BITS)
++
++/* lw tunnel state flags */
++#define LWTUNNEL_STATE_OUTPUT_REDIRECT 0x1
++
++struct lwtunnel_state {
++	__u16		type;
++	__u16		flags;
++	atomic_t	refcnt;
++	int             len;
++	__u8            data[0];
++};
++
++struct lwtunnel_encap_ops {
++	int (*build_state)(struct net_device *dev, struct nlattr *encap,
++			   struct lwtunnel_state **ts);
++	int (*output)(struct sock *sk, struct sk_buff *skb);
++	int (*fill_encap)(struct sk_buff *skb,
++			  struct lwtunnel_state *lwtstate);
++	int (*get_encap_size)(struct lwtunnel_state *lwtstate);
++	int (*cmp_encap)(struct lwtunnel_state *a, struct lwtunnel_state *b);
++};
++
++extern const struct lwtunnel_encap_ops __rcu *
++		lwtun_encaps[LWTUNNEL_ENCAP_MAX+1];
++
++#ifdef CONFIG_LWTUNNEL
++static inline void lwtunnel_state_get(struct lwtunnel_state *lws)
++{
++	atomic_inc(&lws->refcnt);
++}
++
++static inline void lwtunnel_state_put(struct lwtunnel_state *lws)
++{
++	if (!lws)
++		return;
++
++	if (atomic_dec_and_test(&lws->refcnt))
++		kfree(lws);
++}
++
++static inline bool lwtunnel_output_redirect(struct lwtunnel_state *lwtstate)
++{
++	if (lwtstate && (lwtstate->flags & LWTUNNEL_STATE_OUTPUT_REDIRECT))
++		return true;
++
++	return false;
++}
++
++int lwtunnel_encap_add_ops(const struct lwtunnel_encap_ops *op,
++			   unsigned int num);
++int lwtunnel_encap_del_ops(const struct lwtunnel_encap_ops *op,
++			   unsigned int num);
++int lwtunnel_build_state(struct net_device *dev, u16 encap_type,
++			 struct nlattr *encap,
++			 struct lwtunnel_state **lws);
++int lwtunnel_fill_encap(struct sk_buff *skb,
++			struct lwtunnel_state *lwtstate);
++int lwtunnel_get_encap_size(struct lwtunnel_state *lwtstate);
++struct lwtunnel_state *lwtunnel_state_alloc(int hdr_len);
++int lwtunnel_cmp_encap(struct lwtunnel_state *a, struct lwtunnel_state *b);
++int lwtunnel_output(struct sock *sk, struct sk_buff *skb);
++int lwtunnel_output6(struct sock *sk, struct sk_buff *skb);
++
++#else
++
++static inline void lwtunnel_state_get(struct lwtunnel_state *lws)
++{
++}
++
++static inline void lwtunnel_state_put(struct lwtunnel_state *lws)
++{
++}
++
++static inline bool lwtunnel_output_redirect(struct lwtunnel_state *lwtstate)
++{
++	return false;
++}
++
++static inline int lwtunnel_encap_add_ops(const struct lwtunnel_encap_ops *op,
++					 unsigned int num)
++{
++	return -EOPNOTSUPP;
++
++}
++
++static inline int lwtunnel_encap_del_ops(const struct lwtunnel_encap_ops *op,
++					 unsigned int num)
++{
++	return -EOPNOTSUPP;
++}
++
++static inline int lwtunnel_build_state(struct net_device *dev, u16 encap_type,
++				       struct nlattr *encap,
++				       struct lwtunnel_state **lws)
++{
++	return -EOPNOTSUPP;
++}
++
++static inline int lwtunnel_fill_encap(struct sk_buff *skb,
++				      struct lwtunnel_state *lwtstate)
++{
++	return 0;
++}
++
++static inline int lwtunnel_get_encap_size(struct lwtunnel_state *lwtstate)
++{
++	return 0;
++}
++
++static inline struct lwtunnel_state *lwtunnel_state_alloc(int hdr_len)
++{
++	return NULL;
++}
++
++static inline int lwtunnel_cmp_encap(struct lwtunnel_state *a,
++				     struct lwtunnel_state *b)
++{
++	return 0;
++}
++
++static inline int lwtunnel_output(struct sock *sk, struct sk_buff *skb)
++{
++	return -EOPNOTSUPP;
++}
++
++static inline int lwtunnel_output6(struct sock *sk, struct sk_buff *skb)
++{
++	return -EOPNOTSUPP;
++}
++
++#endif
++
++#endif /* __NET_LWTUNNEL_H */
+diff --git a/include/net/mpls_iptunnel.h b/include/net/mpls_iptunnel.h
+new file mode 100644
+index 0000000..4757997
+--- /dev/null
++++ b/include/net/mpls_iptunnel.h
+@@ -0,0 +1,29 @@
++/*
++ * Copyright (c) 2015 Cumulus Networks, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of version 2 of the GNU General Public
++ * License as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * General Public License for more details.
++ */
++
++#ifndef _NET_MPLS_IPTUNNEL_H
++#define _NET_MPLS_IPTUNNEL_H 1
++
++#define MAX_NEW_LABELS 2
++
++struct mpls_iptunnel_encap {
++	u32	label[MAX_NEW_LABELS];
++	u32	labels;
++};
++
++static inline struct mpls_iptunnel_encap *mpls_lwtunnel_encap(struct lwtunnel_state *lwtstate)
++{
++	return (struct mpls_iptunnel_encap *)lwtstate->data;
++}
++
++#endif
+diff --git a/include/net/route.h b/include/net/route.h
+index fe22d03..2d45f41 100644
+--- a/include/net/route.h
++++ b/include/net/route.h
+@@ -66,6 +66,7 @@ struct rtable {
+ 
+ 	struct list_head	rt_uncached;
+ 	struct uncached_list	*rt_uncached_list;
++	struct lwtunnel_state   *rt_lwtstate;
+ };
+ 
+ static inline bool rt_is_input_route(const struct rtable *rt)
+diff --git a/include/net/rtnetlink.h b/include/net/rtnetlink.h
+index 343d922..18fdb98 100644
+--- a/include/net/rtnetlink.h
++++ b/include/net/rtnetlink.h
+@@ -141,6 +141,7 @@ struct net_device *rtnl_create_link(struct net *net, const char *ifname,
+ 				    unsigned char name_assign_type,
+ 				    const struct rtnl_link_ops *ops,
+ 				    struct nlattr *tb[]);
++int rtnl_delete_link(struct net_device *dev);
+ int rtnl_configure_link(struct net_device *dev, const struct ifinfomsg *ifm);
+ 
+ int rtnl_nla_parse_ifla(struct nlattr **tb, const struct nlattr *head, int len);
+diff --git a/include/net/vxlan.h b/include/net/vxlan.h
+index 0082b5d..eb8d721 100644
+--- a/include/net/vxlan.h
++++ b/include/net/vxlan.h
+@@ -7,6 +7,7 @@
+ #include <linux/skbuff.h>
+ #include <linux/netdevice.h>
+ #include <linux/udp.h>
++#include <net/dst_metadata.h>
+ 
+ #define VNI_HASH_BITS	10
+ #define VNI_HASH_SIZE	(1<<VNI_HASH_BITS)
+@@ -94,20 +95,18 @@ struct vxlanhdr {
+ #define VXLAN_VNI_MASK  (VXLAN_VID_MASK << 8)
+ #define VXLAN_HLEN (sizeof(struct udphdr) + sizeof(struct vxlanhdr))
+ 
++#define VNI_HASH_BITS	10
++#define VNI_HASH_SIZE	(1<<VNI_HASH_BITS)
++#define FDB_HASH_BITS	8
++#define FDB_HASH_SIZE	(1<<FDB_HASH_BITS)
++
+ struct vxlan_metadata {
+-	__be32		vni;
+ 	u32		gbp;
+ };
+ 
+-struct vxlan_sock;
+-typedef void (vxlan_rcv_t)(struct vxlan_sock *vh, struct sk_buff *skb,
+-			   struct vxlan_metadata *md);
+-
+ /* per UDP socket information */
+ struct vxlan_sock {
+ 	struct hlist_node hlist;
+-	vxlan_rcv_t	 *rcv;
+-	void		 *data;
+ 	struct work_struct del_work;
+ 	struct socket	 *sock;
+ 	struct rcu_head	  rcu;
+@@ -117,6 +116,57 @@ struct vxlan_sock {
+ 	u32		  flags;
+ };
+ 
++union vxlan_addr {
++	struct sockaddr_in sin;
++	struct sockaddr_in6 sin6;
++	struct sockaddr sa;
++};
++
++struct vxlan_rdst {
++	union vxlan_addr	 remote_ip;
++	__be16			 remote_port;
++	u32			 remote_vni;
++	u32			 remote_ifindex;
++	struct list_head	 list;
++	struct rcu_head		 rcu;
++};
++
++struct vxlan_config {
++	union vxlan_addr	remote_ip;
++	union vxlan_addr	saddr;
++	u32			vni;
++	int			remote_ifindex;
++	int			mtu;
++	__be16			dst_port;
++	__u16			port_min;
++	__u16			port_max;
++	__u8			tos;
++	__u8			ttl;
++	u32			flags;
++	unsigned long		age_interval;
++	unsigned int		addrmax;
++	bool			no_share;
++};
++
++/* Pseudo network device */
++struct vxlan_dev {
++	struct hlist_node hlist;	/* vni hash table */
++	struct list_head  next;		/* vxlan's per namespace list */
++	struct vxlan_sock *vn_sock;	/* listening socket */
++	struct net_device *dev;
++	struct net	  *net;		/* netns for packet i/o */
++	struct vxlan_rdst default_dst;	/* default destination */
++	u32		  flags;	/* VXLAN_F_* in vxlan.h */
++
++	struct timer_list age_timer;
++	spinlock_t	  hash_lock;
++	unsigned int	  addrcnt;
++
++	struct vxlan_config	cfg;
++
++	struct hlist_head fdb_head[FDB_HASH_SIZE];
++};
++
+ #define VXLAN_F_LEARN			0x01
+ #define VXLAN_F_PROXY			0x02
+ #define VXLAN_F_RSC			0x04
+@@ -130,6 +180,8 @@ struct vxlan_sock {
+ #define VXLAN_F_REMCSUM_RX		0x400
+ #define VXLAN_F_GBP			0x800
+ #define VXLAN_F_REMCSUM_NOPARTIAL	0x1000
++#define VXLAN_F_COLLECT_METADATA	0x2000
++#define VXLAN_F_FLOW_BASED		0x4000
+ 
+ /* Flags that are used in the receive path. These flags must match in
+  * order for a socket to be shareable
+@@ -137,18 +189,17 @@ struct vxlan_sock {
+ #define VXLAN_F_RCV_FLAGS		(VXLAN_F_GBP |			\
+ 					 VXLAN_F_UDP_ZERO_CSUM6_RX |	\
+ 					 VXLAN_F_REMCSUM_RX |		\
+-					 VXLAN_F_REMCSUM_NOPARTIAL)
+-
+-struct vxlan_sock *vxlan_sock_add(struct net *net, __be16 port,
+-				  vxlan_rcv_t *rcv, void *data,
+-				  bool no_share, u32 flags);
++					 VXLAN_F_REMCSUM_NOPARTIAL |	\
++					 VXLAN_F_COLLECT_METADATA |	\
++					 VXLAN_F_FLOW_BASED)
+ 
+-void vxlan_sock_release(struct vxlan_sock *vs);
++struct net_device *vxlan_dev_create(struct net *net, const char *name,
++				    u8 name_assign_type, struct vxlan_config *conf);
+ 
+-int vxlan_xmit_skb(struct rtable *rt, struct sock *sk, struct sk_buff *skb,
+-		   __be32 src, __be32 dst, __u8 tos, __u8 ttl, __be16 df,
+-		   __be16 src_port, __be16 dst_port, struct vxlan_metadata *md,
+-		   bool xnet, u32 vxflags);
++static inline __be16 vxlan_dev_dst_port(struct vxlan_dev *vxlan)
++{
++	return inet_sk(vxlan->vn_sock->sock->sk)->inet_sport;
++}
+ 
+ static inline netdev_features_t vxlan_features_check(struct sk_buff *skb,
+ 						     netdev_features_t features)
+diff --git a/include/uapi/linux/fib_rules.h b/include/uapi/linux/fib_rules.h
+index 2b82d7e..96161b8 100644
+--- a/include/uapi/linux/fib_rules.h
++++ b/include/uapi/linux/fib_rules.h
+@@ -43,7 +43,7 @@ enum {
+ 	FRA_UNUSED5,
+ 	FRA_FWMARK,	/* mark */
+ 	FRA_FLOW,	/* flow/class id */
+-	FRA_UNUSED6,
++	FRA_TUN_ID,
+ 	FRA_SUPPRESS_IFGROUP,
+ 	FRA_SUPPRESS_PREFIXLEN,
+ 	FRA_TABLE,	/* Extended table id */
+diff --git a/include/uapi/linux/if_link.h b/include/uapi/linux/if_link.h
+index d9cd192..81d4492 100644
+--- a/include/uapi/linux/if_link.h
++++ b/include/uapi/linux/if_link.h
+@@ -381,6 +381,7 @@ enum {
+ 	IFLA_VXLAN_REMCSUM_RX,
+ 	IFLA_VXLAN_GBP,
+ 	IFLA_VXLAN_REMCSUM_NOPARTIAL,
++	IFLA_VXLAN_FLOWBASED,
+ 	__IFLA_VXLAN_MAX
+ };
+ #define IFLA_VXLAN_MAX	(__IFLA_VXLAN_MAX - 1)
+diff --git a/include/uapi/linux/lwtunnel.h b/include/uapi/linux/lwtunnel.h
+new file mode 100644
+index 0000000..31377bb
+--- /dev/null
++++ b/include/uapi/linux/lwtunnel.h
+@@ -0,0 +1,16 @@
++#ifndef _UAPI_LWTUNNEL_H_
++#define _UAPI_LWTUNNEL_H_
++
++#include <linux/types.h>
++
++enum lwtunnel_encap_types {
++	LWTUNNEL_ENCAP_NONE,
++	LWTUNNEL_ENCAP_MPLS,
++	LWTUNNEL_ENCAP_IP,
++	__LWTUNNEL_ENCAP_MAX,
++};
++
++#define LWTUNNEL_ENCAP_MAX (__LWTUNNEL_ENCAP_MAX - 1)
++
++
++#endif /* _UAPI_LWTUNNEL_H_ */
+diff --git a/include/uapi/linux/mpls_iptunnel.h b/include/uapi/linux/mpls_iptunnel.h
+new file mode 100644
+index 0000000..d80a049
+--- /dev/null
++++ b/include/uapi/linux/mpls_iptunnel.h
+@@ -0,0 +1,28 @@
++/*
++ *	mpls tunnel api
++ *
++ *	Authors:
++ *		Roopa Prabhu <roopa@cumulusnetworks.com>
++ *
++ *	This program is free software; you can redistribute it and/or
++ *	modify it under the terms of the GNU General Public License
++ *	as published by the Free Software Foundation; either version
++ *	2 of the License, or (at your option) any later version.
++ */
++
++#ifndef _UAPI_LINUX_MPLS_IPTUNNEL_H
++#define _UAPI_LINUX_MPLS_IPTUNNEL_H
++
++/* MPLS tunnel attributes
++ * [RTA_ENCAP] = {
++ *     [MPLS_IPTUNNEL_DST]
++ * }
++ */
++enum {
++	MPLS_IPTUNNEL_UNSPEC,
++	MPLS_IPTUNNEL_DST,
++	__MPLS_IPTUNNEL_MAX,
++};
++#define MPLS_IPTUNNEL_MAX (__MPLS_IPTUNNEL_MAX - 1)
++
++#endif /* _UAPI_LINUX_MPLS_IPTUNNEL_H */
+diff --git a/include/uapi/linux/openvswitch.h b/include/uapi/linux/openvswitch.h
+index bbd49a0..fffe317 100644
+--- a/include/uapi/linux/openvswitch.h
++++ b/include/uapi/linux/openvswitch.h
+@@ -319,7 +319,7 @@ enum ovs_key_attr {
+ 				 * the accepted length of the array. */
+ 
+ #ifdef __KERNEL__
+-	OVS_KEY_ATTR_TUNNEL_INFO,  /* struct ovs_tunnel_info */
++	OVS_KEY_ATTR_TUNNEL_INFO,  /* struct ip_tunnel_info */
+ #endif
+ 	__OVS_KEY_ATTR_MAX
+ };
+diff --git a/include/uapi/linux/rtnetlink.h b/include/uapi/linux/rtnetlink.h
+index 17fb02f..8a0937f 100644
+--- a/include/uapi/linux/rtnetlink.h
++++ b/include/uapi/linux/rtnetlink.h
+@@ -286,6 +286,21 @@ enum rt_class_t {
+ 
+ /* Routing message attributes */
+ 
++enum ip_tunnel_t {
++	IP_TUN_UNSPEC,
++	IP_TUN_ID,
++	IP_TUN_DST,
++	IP_TUN_SRC,
++	IP_TUN_TTL,
++	IP_TUN_TOS,
++	IP_TUN_SPORT,
++	IP_TUN_DPORT,
++	IP_TUN_FLAGS,
++	__IP_TUN_MAX,
++};
++
++#define IP_TUN_MAX (__IP_TUN_MAX - 1)
++
+ enum rtattr_type_t {
+ 	RTA_UNSPEC,
+ 	RTA_DST,
+@@ -308,6 +323,8 @@ enum rtattr_type_t {
+ 	RTA_VIA,
+ 	RTA_NEWDST,
+ 	RTA_PREF,
++	RTA_ENCAP_TYPE,
++	RTA_ENCAP,
+ 	__RTA_MAX
+ };
+ 
+diff --git a/net/Kconfig b/net/Kconfig
+index 44dd578..b53855b 100644
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -371,6 +371,13 @@ source "net/caif/Kconfig"
+ source "net/ceph/Kconfig"
+ source "net/nfc/Kconfig"
+ 
++config LWTUNNEL
++	bool "Network light weight tunnels"
++	---help---
++	  This feature provides an infrastructure to support light weight
++	  tunnels like mpls. There is no netdevice associated with a light
++	  weight tunnel endpoint. Tunnel encapsulation parameters are stored
++	  with light weight tunnel state associated with fib routes.
+ 
+ endif   # if NET
+ 
+diff --git a/net/core/Makefile b/net/core/Makefile
+index fec0856..086b01f 100644
+--- a/net/core/Makefile
++++ b/net/core/Makefile
+@@ -23,3 +23,4 @@ obj-$(CONFIG_NETWORK_PHY_TIMESTAMPING) += timestamping.o
+ obj-$(CONFIG_NET_PTP_CLASSIFY) += ptp_classifier.o
+ obj-$(CONFIG_CGROUP_NET_PRIO) += netprio_cgroup.o
+ obj-$(CONFIG_CGROUP_NET_CLASSID) += netclassid_cgroup.o
++obj-$(CONFIG_LWTUNNEL) += lwtunnel.o
+diff --git a/net/core/dev.c b/net/core/dev.c
+index aa82f9a..6545f52 100644
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -7514,7 +7514,7 @@ static int __init net_dev_init(void)
+ 	open_softirq(NET_RX_SOFTIRQ, net_rx_action);
+ 
+ 	hotcpu_notifier(dev_cpu_callback, 0);
+-	dst_init();
++	dst_subsys_init();
+ 	rc = 0;
+ out:
+ 	return rc;
+diff --git a/net/core/dst.c b/net/core/dst.c
+index e956ce6..917364f 100644
+--- a/net/core/dst.c
++++ b/net/core/dst.c
+@@ -22,6 +22,7 @@
+ #include <linux/prefetch.h>
+ 
+ #include <net/dst.h>
++#include <net/dst_metadata.h>
+ 
+ /*
+  * Theory of operations:
+@@ -158,19 +159,10 @@ const u32 dst_default_metrics[RTAX_MAX + 1] = {
+ 	[RTAX_MAX] = 0xdeadbeef,
+ };
+ 
+-
+-void *dst_alloc(struct dst_ops *ops, struct net_device *dev,
+-		int initial_ref, int initial_obsolete, unsigned short flags)
++void dst_init(struct dst_entry *dst, struct dst_ops *ops,
++	      struct net_device *dev, int initial_ref, int initial_obsolete,
++	      unsigned short flags)
+ {
+-	struct dst_entry *dst;
+-
+-	if (ops->gc && dst_entries_get_fast(ops) > ops->gc_thresh) {
+-		if (ops->gc(ops))
+-			return NULL;
+-	}
+-	dst = kmem_cache_alloc(ops->kmem_cachep, GFP_ATOMIC);
+-	if (!dst)
+-		return NULL;
+ 	dst->child = NULL;
+ 	dst->dev = dev;
+ 	if (dev)
+@@ -200,6 +192,25 @@ void *dst_alloc(struct dst_ops *ops, struct net_device *dev,
+ 	dst->next = NULL;
+ 	if (!(flags & DST_NOCOUNT))
+ 		dst_entries_add(ops, 1);
++}
++EXPORT_SYMBOL(dst_init);
++
++void *dst_alloc(struct dst_ops *ops, struct net_device *dev,
++		int initial_ref, int initial_obsolete, unsigned short flags)
++{
++	struct dst_entry *dst;
++
++	if (ops->gc && dst_entries_get_fast(ops) > ops->gc_thresh) {
++		if (ops->gc(ops))
++			return NULL;
++	}
++
++	dst = kmem_cache_alloc(ops->kmem_cachep, GFP_ATOMIC);
++	if (!dst)
++		return NULL;
++
++	dst_init(dst, ops, dev, initial_ref, initial_obsolete, flags);
++
+ 	return dst;
+ }
+ EXPORT_SYMBOL(dst_alloc);
+@@ -248,7 +259,11 @@ again:
+ 		dst->ops->destroy(dst);
+ 	if (dst->dev)
+ 		dev_put(dst->dev);
+-	kmem_cache_free(dst->ops->kmem_cachep, dst);
++
++	if (dst->flags & DST_METADATA)
++		kfree(dst);
++	else
++		kmem_cache_free(dst->ops->kmem_cachep, dst);
+ 
+ 	dst = child;
+ 	if (dst) {
+@@ -327,6 +342,47 @@ void __dst_destroy_metrics_generic(struct dst_entry *dst, unsigned long old)
+ }
+ EXPORT_SYMBOL(__dst_destroy_metrics_generic);
+ 
++static struct dst_ops md_dst_ops = {
++	.family =		AF_UNSPEC,
++};
++
++static int dst_md_discard_sk(struct sock *sk, struct sk_buff *skb)
++{
++	WARN_ONCE(1, "Attempting to call output on metadata dst\n");
++	kfree_skb(skb);
++	return 0;
++}
++
++static int dst_md_discard(struct sk_buff *skb)
++{
++	WARN_ONCE(1, "Attempting to call input on metadata dst\n");
++	kfree_skb(skb);
++	return 0;
++}
++
++struct metadata_dst *metadata_dst_alloc(u8 optslen, gfp_t flags)
++{
++	struct metadata_dst *md_dst;
++	struct dst_entry *dst;
++
++	md_dst = kmalloc(sizeof(*md_dst) + optslen, flags);
++	if (!md_dst)
++		return ERR_PTR(-ENOMEM);
++
++	dst = &md_dst->dst;
++	dst_init(dst, &md_dst_ops, NULL, 1, DST_OBSOLETE_NONE,
++		 DST_METADATA | DST_NOCACHE | DST_NOCOUNT);
++
++	dst->input = dst_md_discard;
++	dst->output = dst_md_discard_sk;
++
++	memset(dst + 1, 0, sizeof(*md_dst) + optslen - sizeof(*dst));
++	md_dst->opts_len = optslen;
++
++	return md_dst;
++}
++EXPORT_SYMBOL_GPL(metadata_dst_alloc);
++
+ /* Dirty hack. We did it in 2.2 (in __dst_free),
+  * we have _very_ good reasons not to repeat
+  * this mistake in 2.3, but we have no choice
+@@ -391,7 +447,7 @@ static struct notifier_block dst_dev_notifier = {
+ 	.priority = -10, /* must be called after other network notifiers */
+ };
+ 
+-void __init dst_init(void)
++void __init dst_subsys_init(void)
+ {
+ 	register_netdevice_notifier(&dst_dev_notifier);
+ }
+diff --git a/net/core/fib_rules.c b/net/core/fib_rules.c
+index 9a12668..ae8306e 100644
+--- a/net/core/fib_rules.c
++++ b/net/core/fib_rules.c
+@@ -16,6 +16,7 @@
+ #include <net/net_namespace.h>
+ #include <net/sock.h>
+ #include <net/fib_rules.h>
++#include <net/ip_tunnels.h>
+ 
+ int fib_default_rule_add(struct fib_rules_ops *ops,
+ 			 u32 pref, u32 table, u32 flags)
+@@ -186,6 +187,9 @@ static int fib_rule_match(struct fib_rule *rule, struct fib_rules_ops *ops,
+ 	if ((rule->mark ^ fl->flowi_mark) & rule->mark_mask)
+ 		goto out;
+ 
++	if (rule->tun_id && (rule->tun_id != fl->flowi_tun_key.tun_id))
++		goto out;
++
+ 	ret = ops->match(rule, fl, flags);
+ out:
+ 	return (rule->flags & FIB_RULE_INVERT) ? !ret : ret;
+@@ -330,6 +334,9 @@ static int fib_nl_newrule(struct sk_buff *skb, struct nlmsghdr* nlh)
+ 	if (tb[FRA_FWMASK])
+ 		rule->mark_mask = nla_get_u32(tb[FRA_FWMASK]);
+ 
++	if (tb[FRA_TUN_ID])
++		rule->tun_id = nla_get_be64(tb[FRA_TUN_ID]);
++
+ 	rule->action = frh->action;
+ 	rule->flags = frh->flags;
+ 	rule->table = frh_get_table(frh, tb);
+@@ -407,6 +414,9 @@ static int fib_nl_newrule(struct sk_buff *skb, struct nlmsghdr* nlh)
+ 	if (unresolved)
+ 		ops->unresolved_rules++;
+ 
++	if (rule->tun_id)
++		ip_tunnel_need_metadata();
++
+ 	notify_rule_change(RTM_NEWRULE, rule, ops, nlh, NETLINK_CB(skb).portid);
+ 	flush_route_cache(ops);
+ 	rules_ops_put(ops);
+@@ -473,6 +483,10 @@ static int fib_nl_delrule(struct sk_buff *skb, struct nlmsghdr* nlh)
+ 		    (rule->mark_mask != nla_get_u32(tb[FRA_FWMASK])))
+ 			continue;
+ 
++		if (tb[FRA_TUN_ID] &&
++		    (rule->tun_id != nla_get_be64(tb[FRA_TUN_ID])))
++			continue;
++
+ 		if (!ops->compare(rule, frh, tb))
+ 			continue;
+ 
+@@ -487,6 +501,9 @@ static int fib_nl_delrule(struct sk_buff *skb, struct nlmsghdr* nlh)
+ 				goto errout;
+ 		}
+ 
++		if (rule->tun_id)
++			ip_tunnel_unneed_metadata();
++
+ 		list_del_rcu(&rule->list);
+ 
+ 		if (rule->action == FR_ACT_GOTO) {
+@@ -535,7 +552,8 @@ static inline size_t fib_rule_nlmsg_size(struct fib_rules_ops *ops,
+ 			 + nla_total_size(4) /* FRA_SUPPRESS_PREFIXLEN */
+ 			 + nla_total_size(4) /* FRA_SUPPRESS_IFGROUP */
+ 			 + nla_total_size(4) /* FRA_FWMARK */
+-			 + nla_total_size(4); /* FRA_FWMASK */
++			 + nla_total_size(4) /* FRA_FWMASK */
++			 + nla_total_size(8); /* FRA_TUN_ID */
+ 
+ 	if (ops->nlmsg_payload)
+ 		payload += ops->nlmsg_payload(rule);
+@@ -591,7 +609,9 @@ static int fib_nl_fill_rule(struct sk_buff *skb, struct fib_rule *rule,
+ 	    ((rule->mark_mask || rule->mark) &&
+ 	     nla_put_u32(skb, FRA_FWMASK, rule->mark_mask)) ||
+ 	    (rule->target &&
+-	     nla_put_u32(skb, FRA_GOTO, rule->target)))
++	     nla_put_u32(skb, FRA_GOTO, rule->target)) ||
++	    (rule->tun_id &&
++	     nla_put_be64(skb, FRA_TUN_ID, rule->tun_id)))
+ 		goto nla_put_failure;
+ 
+ 	if (rule->suppress_ifgroup != -1) {
+diff --git a/net/core/lwtunnel.c b/net/core/lwtunnel.c
+new file mode 100644
+index 0000000..bb58826
+--- /dev/null
++++ b/net/core/lwtunnel.c
+@@ -0,0 +1,235 @@
++/*
++ * lwtunnel	Infrastructure for light weight tunnels like mpls
++ *
++ * Authors:	Roopa Prabhu, <roopa@cumulusnetworks.com>
++ *
++ *		This program is free software; you can redistribute it and/or
++ *		modify it under the terms of the GNU General Public License
++ *		as published by the Free Software Foundation; either version
++ *		2 of the License, or (at your option) any later version.
++ *
++ */
++
++#include <linux/capability.h>
++#include <linux/module.h>
++#include <linux/types.h>
++#include <linux/kernel.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/skbuff.h>
++#include <linux/netdevice.h>
++#include <linux/lwtunnel.h>
++#include <linux/in.h>
++#include <linux/init.h>
++#include <linux/err.h>
++
++#include <net/lwtunnel.h>
++#include <net/rtnetlink.h>
++#include <net/ip6_fib.h>
++
++struct lwtunnel_state *lwtunnel_state_alloc(int encap_len)
++{
++	struct lwtunnel_state *lws;
++
++	lws = kzalloc(sizeof(*lws) + encap_len, GFP_ATOMIC);
++
++	return lws;
++}
++EXPORT_SYMBOL(lwtunnel_state_alloc);
++
++const struct lwtunnel_encap_ops __rcu *
++		lwtun_encaps[LWTUNNEL_ENCAP_MAX + 1] __read_mostly;
++
++int lwtunnel_encap_add_ops(const struct lwtunnel_encap_ops *ops,
++			   unsigned int num)
++{
++	if (num > LWTUNNEL_ENCAP_MAX)
++		return -ERANGE;
++
++	return !cmpxchg((const struct lwtunnel_encap_ops **)
++			&lwtun_encaps[num],
++			NULL, ops) ? 0 : -1;
++}
++EXPORT_SYMBOL(lwtunnel_encap_add_ops);
++
++int lwtunnel_encap_del_ops(const struct lwtunnel_encap_ops *ops,
++			   unsigned int encap_type)
++{
++	int ret;
++
++	if (encap_type == LWTUNNEL_ENCAP_NONE ||
++	    encap_type > LWTUNNEL_ENCAP_MAX)
++		return -ERANGE;
++
++	ret = (cmpxchg((const struct lwtunnel_encap_ops **)
++		       &lwtun_encaps[encap_type],
++		       ops, NULL) == ops) ? 0 : -1;
++
++	synchronize_net();
++
++	return ret;
++}
++EXPORT_SYMBOL(lwtunnel_encap_del_ops);
++
++int lwtunnel_build_state(struct net_device *dev, u16 encap_type,
++			 struct nlattr *encap, struct lwtunnel_state **lws)
++{
++	const struct lwtunnel_encap_ops *ops;
++	int ret = -EINVAL;
++
++	if (encap_type == LWTUNNEL_ENCAP_NONE ||
++	    encap_type > LWTUNNEL_ENCAP_MAX)
++		return ret;
++
++	ret = -EOPNOTSUPP;
++	rcu_read_lock();
++	ops = rcu_dereference(lwtun_encaps[encap_type]);
++	if (likely(ops && ops->build_state))
++		ret = ops->build_state(dev, encap, lws);
++	rcu_read_unlock();
++
++	return ret;
++}
++EXPORT_SYMBOL(lwtunnel_build_state);
++
++int lwtunnel_fill_encap(struct sk_buff *skb, struct lwtunnel_state *lwtstate)
++{
++	const struct lwtunnel_encap_ops *ops;
++	struct nlattr *nest;
++	int ret = -EINVAL;
++
++	if (!lwtstate)
++		return 0;
++
++	if (lwtstate->type == LWTUNNEL_ENCAP_NONE ||
++	    lwtstate->type > LWTUNNEL_ENCAP_MAX)
++		return 0;
++
++	ret = -EOPNOTSUPP;
++	nest = nla_nest_start(skb, RTA_ENCAP);
++	rcu_read_lock();
++	ops = rcu_dereference(lwtun_encaps[lwtstate->type]);
++	if (likely(ops && ops->fill_encap))
++		ret = ops->fill_encap(skb, lwtstate);
++	rcu_read_unlock();
++
++	if (ret)
++		goto nla_put_failure;
++	nla_nest_end(skb, nest);
++	ret = nla_put_u16(skb, RTA_ENCAP_TYPE, lwtstate->type);
++	if (ret)
++		goto nla_put_failure;
++
++	return 0;
++
++nla_put_failure:
++	nla_nest_cancel(skb, nest);
++
++	return (ret == -EOPNOTSUPP ? 0 : ret);
++}
++EXPORT_SYMBOL(lwtunnel_fill_encap);
++
++int lwtunnel_get_encap_size(struct lwtunnel_state *lwtstate)
++{
++	const struct lwtunnel_encap_ops *ops;
++	int ret = 0;
++
++	if (!lwtstate)
++		return 0;
++
++	if (lwtstate->type == LWTUNNEL_ENCAP_NONE ||
++	    lwtstate->type > LWTUNNEL_ENCAP_MAX)
++		return 0;
++
++	rcu_read_lock();
++	ops = rcu_dereference(lwtun_encaps[lwtstate->type]);
++	if (likely(ops && ops->get_encap_size))
++		ret = nla_total_size(ops->get_encap_size(lwtstate));
++	rcu_read_unlock();
++
++	return ret;
++}
++EXPORT_SYMBOL(lwtunnel_get_encap_size);
++
++int lwtunnel_cmp_encap(struct lwtunnel_state *a, struct lwtunnel_state *b)
++{
++	const struct lwtunnel_encap_ops *ops;
++	int ret = 0;
++
++	if (!a && !b)
++		return 0;
++
++	if (!a || !b)
++		return 1;
++
++	if (a->type != b->type)
++		return 1;
++
++	if (a->type == LWTUNNEL_ENCAP_NONE ||
++	    a->type > LWTUNNEL_ENCAP_MAX)
++		return 0;
++
++	rcu_read_lock();
++	ops = rcu_dereference(lwtun_encaps[a->type]);
++	if (likely(ops && ops->cmp_encap))
++		ret = ops->cmp_encap(a, b);
++	rcu_read_unlock();
++
++	return ret;
++}
++EXPORT_SYMBOL(lwtunnel_cmp_encap);
++
++int __lwtunnel_output(struct sock *sk, struct sk_buff *skb,
++		      struct lwtunnel_state *lwtstate)
++{
++	const struct lwtunnel_encap_ops *ops;
++	int ret = -EINVAL;
++
++	if (!lwtstate)
++		goto drop;
++
++	if (lwtstate->type == LWTUNNEL_ENCAP_NONE ||
++	    lwtstate->type > LWTUNNEL_ENCAP_MAX)
++		return 0;
++
++	ret = -EOPNOTSUPP;
++	rcu_read_lock();
++	ops = rcu_dereference(lwtun_encaps[lwtstate->type]);
++	if (likely(ops && ops->output))
++		ret = ops->output(sk, skb);
++	rcu_read_unlock();
++
++	if (ret == -EOPNOTSUPP)
++		goto drop;
++
++	return ret;
++
++drop:
++	kfree(skb);
++
++	return ret;
++}
++
++int lwtunnel_output6(struct sock *sk, struct sk_buff *skb)
++{
++	struct rt6_info *rt = (struct rt6_info *)skb_dst(skb);
++	struct lwtunnel_state *lwtstate = NULL;
++
++	if (rt)
++		lwtstate = rt->rt6i_lwtstate;
++
++	return __lwtunnel_output(sk, skb, lwtstate);
++}
++EXPORT_SYMBOL(lwtunnel_output6);
++
++int lwtunnel_output(struct sock *sk, struct sk_buff *skb)
++{
++	struct rtable *rt = (struct rtable *)skb_dst(skb);
++	struct lwtunnel_state *lwtstate = NULL;
++
++	if (rt)
++		lwtstate = rt->rt_lwtstate;
++
++	return __lwtunnel_output(sk, skb, lwtstate);
++}
++EXPORT_SYMBOL(lwtunnel_output);
+diff --git a/net/core/rtnetlink.c b/net/core/rtnetlink.c
+index 8de3682..50a8ccc 100644
+--- a/net/core/rtnetlink.c
++++ b/net/core/rtnetlink.c
+@@ -1892,16 +1892,30 @@ static int rtnl_group_dellink(const struct net *net, int group)
+ 	return 0;
+ }
+ 
++int rtnl_delete_link(struct net_device *dev)
++{
++	const struct rtnl_link_ops *ops;
++	LIST_HEAD(list_kill);
++
++	ops = dev->rtnl_link_ops;
++	if (!ops || !ops->dellink)
++		return -EOPNOTSUPP;
++
++	ops->dellink(dev, &list_kill);
++	unregister_netdevice_many(&list_kill);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(rtnl_delete_link);
++
+ static int rtnl_dellink(struct sk_buff *skb, struct nlmsghdr *nlh)
+ {
+ 	struct net *net = sock_net(skb->sk);
+-	const struct rtnl_link_ops *ops;
+ 	struct net_device *dev;
+ 	struct ifinfomsg *ifm;
+ 	char ifname[IFNAMSIZ];
+ 	struct nlattr *tb[IFLA_MAX+1];
+ 	int err;
+-	LIST_HEAD(list_kill);
+ 
+ 	err = nlmsg_parse(nlh, sizeof(*ifm), tb, IFLA_MAX, ifla_policy);
+ 	if (err < 0)
+@@ -1923,13 +1937,7 @@ static int rtnl_dellink(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 	if (!dev)
+ 		return -ENODEV;
+ 
+-	ops = dev->rtnl_link_ops;
+-	if (!ops || !ops->dellink)
+-		return -EOPNOTSUPP;
+-
+-	ops->dellink(dev, &list_kill);
+-	unregister_netdevice_many(&list_kill);
+-	return 0;
++	return rtnl_delete_link(dev);
+ }
+ 
+ int rtnl_configure_link(struct net_device *dev, const struct ifinfomsg *ifm)
+diff --git a/net/ipv4/arp.c b/net/ipv4/arp.c
+index 933a928..1d59e50 100644
+--- a/net/ipv4/arp.c
++++ b/net/ipv4/arp.c
+@@ -291,6 +291,40 @@ static void arp_error_report(struct neighbour *neigh, struct sk_buff *skb)
+ 	kfree_skb(skb);
+ }
+ 
++/* Create and send an arp packet. */
++static void arp_send_dst(int type, int ptype, __be32 dest_ip,
++			 struct net_device *dev, __be32 src_ip,
++			 const unsigned char *dest_hw,
++			 const unsigned char *src_hw,
++			 const unsigned char *target_hw, struct sk_buff *oskb)
++{
++	struct sk_buff *skb;
++
++	/* arp on this interface. */
++	if (dev->flags & IFF_NOARP)
++		return;
++
++	skb = arp_create(type, ptype, dest_ip, dev, src_ip,
++			 dest_hw, src_hw, target_hw);
++	if (!skb)
++		return;
++
++	if (oskb)
++		skb_dst_copy(skb, oskb);
++
++	arp_xmit(skb);
++}
++
++void arp_send(int type, int ptype, __be32 dest_ip,
++	      struct net_device *dev, __be32 src_ip,
++	      const unsigned char *dest_hw, const unsigned char *src_hw,
++	      const unsigned char *target_hw)
++{
++	arp_send_dst(type, ptype, dest_ip, dev, src_ip, dest_hw, src_hw,
++		     target_hw, NULL);
++}
++EXPORT_SYMBOL(arp_send);
++
+ static void arp_solicit(struct neighbour *neigh, struct sk_buff *skb)
+ {
+ 	__be32 saddr = 0;
+@@ -346,8 +380,9 @@ static void arp_solicit(struct neighbour *neigh, struct sk_buff *skb)
+ 		}
+ 	}
+ 
+-	arp_send(ARPOP_REQUEST, ETH_P_ARP, target, dev, saddr,
+-		 dst_hw, dev->dev_addr, NULL);
++	arp_send_dst(ARPOP_REQUEST, ETH_P_ARP, target, dev, saddr,
++		     dst_hw, dev->dev_addr, NULL,
++		     dev->priv_flags & IFF_XMIT_DST_RELEASE ? NULL : skb);
+ }
+ 
+ static int arp_ignore(struct in_device *in_dev, __be32 sip, __be32 tip)
+@@ -597,32 +632,6 @@ void arp_xmit(struct sk_buff *skb)
+ EXPORT_SYMBOL(arp_xmit);
+ 
+ /*
+- *	Create and send an arp packet.
+- */
+-void arp_send(int type, int ptype, __be32 dest_ip,
+-	      struct net_device *dev, __be32 src_ip,
+-	      const unsigned char *dest_hw, const unsigned char *src_hw,
+-	      const unsigned char *target_hw)
+-{
+-	struct sk_buff *skb;
+-
+-	/*
+-	 *	No arp on this interface.
+-	 */
+-
+-	if (dev->flags&IFF_NOARP)
+-		return;
+-
+-	skb = arp_create(type, ptype, dest_ip, dev, src_ip,
+-			 dest_hw, src_hw, target_hw);
+-	if (!skb)
+-		return;
+-
+-	arp_xmit(skb);
+-}
+-EXPORT_SYMBOL(arp_send);
+-
+-/*
+  *	Process an arp request.
+  */
+ 
+diff --git a/net/ipv4/fib_frontend.c b/net/ipv4/fib_frontend.c
+index 872494e..772189d 100644
+--- a/net/ipv4/fib_frontend.c
++++ b/net/ipv4/fib_frontend.c
+@@ -280,6 +280,7 @@ __be32 fib_compute_spec_dst(struct sk_buff *skb)
+ 		fl4.flowi4_tos = RT_TOS(ip_hdr(skb)->tos);
+ 		fl4.flowi4_scope = scope;
+ 		fl4.flowi4_mark = IN_DEV_SRC_VMARK(in_dev) ? skb->mark : 0;
++		fl4.flowi4_tun_key.tun_id = 0;
+ 		if (!fib_lookup(net, &fl4, &res))
+ 			return FIB_RES_PREFSRC(net, res);
+ 	} else {
+@@ -313,6 +314,7 @@ static int __fib_validate_source(struct sk_buff *skb, __be32 src, __be32 dst,
+ 	fl4.saddr = dst;
+ 	fl4.flowi4_tos = tos;
+ 	fl4.flowi4_scope = RT_SCOPE_UNIVERSE;
++	fl4.flowi4_tun_key.tun_id = 0;
+ 
+ 	no_addr = idev->ifa_list == NULL;
+ 
+@@ -591,6 +593,8 @@ const struct nla_policy rtm_ipv4_policy[RTA_MAX + 1] = {
+ 	[RTA_METRICS]		= { .type = NLA_NESTED },
+ 	[RTA_MULTIPATH]		= { .len = sizeof(struct rtnexthop) },
+ 	[RTA_FLOW]		= { .type = NLA_U32 },
++	[RTA_ENCAP_TYPE]	= { .type = NLA_U16 },
++	[RTA_ENCAP]		= { .type = NLA_NESTED },
+ };
+ 
+ static int rtm_to_fib_config(struct net *net, struct sk_buff *skb,
+@@ -656,6 +660,12 @@ static int rtm_to_fib_config(struct net *net, struct sk_buff *skb,
+ 		case RTA_TABLE:
+ 			cfg->fc_table = nla_get_u32(attr);
+ 			break;
++		case RTA_ENCAP:
++			cfg->fc_encap = attr;
++			break;
++		case RTA_ENCAP_TYPE:
++			cfg->fc_encap_type = nla_get_u16(attr);
++			break;
+ 		}
+ 	}
+ 
+diff --git a/net/ipv4/fib_semantics.c b/net/ipv4/fib_semantics.c
+index 8d695b6..a6fda23 100644
+--- a/net/ipv4/fib_semantics.c
++++ b/net/ipv4/fib_semantics.c
+@@ -44,6 +44,7 @@
+ #include <net/nexthop.h>
+ 
+ #include "fib_lookup.h"
++#include <net/lwtunnel.h>
+ 
+ static DEFINE_SPINLOCK(fib_info_lock);
+ static struct hlist_head *fib_info_hash;
+@@ -208,6 +209,7 @@ static void free_fib_info_rcu(struct rcu_head *head)
+ 	change_nexthops(fi) {
+ 		if (nexthop_nh->nh_dev)
+ 			dev_put(nexthop_nh->nh_dev);
++		lwtunnel_state_put(nexthop_nh->nh_lwtstate);
+ 		free_nh_exceptions(nexthop_nh);
+ 		rt_fibinfo_free_cpus(nexthop_nh->nh_pcpu_rth_output);
+ 		rt_fibinfo_free(&nexthop_nh->nh_rth_input);
+@@ -266,6 +268,8 @@ static inline int nh_comp(const struct fib_info *fi, const struct fib_info *ofi)
+ #ifdef CONFIG_IP_ROUTE_CLASSID
+ 		    nh->nh_tclassid != onh->nh_tclassid ||
+ #endif
++//FIXME		
++		lwtunnel_cmp_encap(nh->nh_lwtstate, onh->nh_lwtstate) ||
+ 		    ((nh->nh_flags ^ onh->nh_flags) & ~RTNH_F_DEAD))
+ 			return -1;
+ 		onh++;
+@@ -366,6 +370,8 @@ static inline size_t fib_nlmsg_size(struct fib_info *fi)
+ 	payload += nla_total_size((RTAX_MAX * nla_total_size(4)));
+ 
+ 	if (fi->fib_nhs) {
++
++		size_t nh_encapsize = 0;
+ 		/* Also handles the special case fib_nhs == 1 */
+ 
+ 		/* each nexthop is packed in an attribute */
+@@ -374,8 +380,19 @@ static inline size_t fib_nlmsg_size(struct fib_info *fi)
+ 		/* may contain flow and gateway attribute */
+ 		nhsize += 2 * nla_total_size(4);
+ 
++		/* grab encap info */
++		for_nexthops(fi) {
++			if (nh->nh_lwtstate) {
++				/* RTA_ENCAP_TYPE */
++				nh_encapsize += lwtunnel_get_encap_size(
++						nh->nh_lwtstate);
++				/* RTA_ENCAP */
++				nh_encapsize +=  nla_total_size(2);
++			}
++		} endfor_nexthops(fi);
++
+ 		/* all nexthops are packed in a nested attribute */
+-		payload += nla_total_size(fi->fib_nhs * nhsize);
++		payload += nla_total_size((fi->fib_nhs * nhsize) + nh_encapsize);
+ 	}
+ 
+ 	return payload;
+@@ -452,6 +469,8 @@ static int fib_count_nexthops(struct rtnexthop *rtnh, int remaining)
+ static int fib_get_nhs(struct fib_info *fi, struct rtnexthop *rtnh,
+ 		       int remaining, struct fib_config *cfg)
+ {
++	struct net *net = cfg->fc_nlinfo.nl_net;
++	int ret;
+ 	change_nexthops(fi) {
+ 		int attrlen;
+ 
+@@ -475,18 +494,65 @@ static int fib_get_nhs(struct fib_info *fi, struct rtnexthop *rtnh,
+ 			if (nexthop_nh->nh_tclassid)
+ 				fi->fib_net->ipv4.fib_num_tclassid_users++;
+ #endif
++			nla = nla_find(attrs, attrlen, RTA_ENCAP);
++			if (nla) {
++				struct lwtunnel_state *lwtstate;
++				struct net_device *dev = NULL;
++				struct nlattr *nla_entype;
++
++				nla_entype = nla_find(attrs, attrlen,
++						      RTA_ENCAP_TYPE);
++				if (!nla_entype)
++					goto err_inval;
++				if (cfg->fc_oif)
++					dev = __dev_get_by_index(net, cfg->fc_oif);
++				ret = lwtunnel_build_state(dev, nla_get_u16(
++							   nla_entype),
++							   nla, &lwtstate);
++				if (ret)
++					goto errout;
++				lwtunnel_state_get(lwtstate);
++				nexthop_nh->nh_lwtstate = lwtstate;
++			}
+ 		}
+ 
+ 		rtnh = rtnh_next(rtnh, &remaining);
+ 	} endfor_nexthops(fi);
+ 
+ 	return 0;
++err_inval:
++	ret = -EINVAL;
++
++errout:
++	return ret;
+ }
+ 
+ #endif
+ 
++int fib_encap_match(struct net *net, u16 encap_type,
++		    struct nlattr *encap,
++		    int oif, const struct fib_nh *nh)
++{
++	struct lwtunnel_state *lwtstate;
++	struct net_device *dev = NULL;
++	int ret;
++
++	if (encap_type == LWTUNNEL_ENCAP_NONE)
++		return 0;
++
++	if (oif)
++		dev = __dev_get_by_index(net, oif);
++	ret = lwtunnel_build_state(dev, encap_type,
++				   encap, &lwtstate);
++	if (!ret)
++		return lwtunnel_cmp_encap(lwtstate, nh->nh_lwtstate);
++
++	return 0;
++}
++
+ int fib_nh_match(struct fib_config *cfg, struct fib_info *fi)
+ {
++	struct net *net = cfg->fc_nlinfo.nl_net;
+ #ifdef CONFIG_IP_ROUTE_MULTIPATH
+ 	struct rtnexthop *rtnh;
+ 	int remaining;
+@@ -496,6 +562,12 @@ int fib_nh_match(struct fib_config *cfg, struct fib_info *fi)
+ 		return 1;
+ 
+ 	if (cfg->fc_oif || cfg->fc_gw) {
++		if (cfg->fc_encap) {
++			if (fib_encap_match(net, cfg->fc_encap_type,
++					    cfg->fc_encap, cfg->fc_oif,
++					    fi->fib_nh))
++			    return 1;
++		}
+ 		if ((!cfg->fc_oif || cfg->fc_oif == fi->fib_nh->nh_oif) &&
+ 		    (!cfg->fc_gw  || cfg->fc_gw == fi->fib_nh->nh_gw))
+ 			return 0;
+@@ -878,7 +950,22 @@ struct fib_info *fib_create_info(struct fib_config *cfg)
+ #endif
+ 	} else {
+ 		struct fib_nh *nh = fi->fib_nh;
++		if (cfg->fc_encap) {
++			struct lwtunnel_state *lwtstate;
++			struct net_device *dev = NULL;
+ 
++			if (cfg->fc_encap_type == LWTUNNEL_ENCAP_NONE)
++				goto err_inval;
++			if (cfg->fc_oif)
++				dev = __dev_get_by_index(net, cfg->fc_oif);
++			err = lwtunnel_build_state(dev, cfg->fc_encap_type,
++						   cfg->fc_encap, &lwtstate);
++			if (err)
++				goto failure;
++
++			lwtunnel_state_get(lwtstate);
++			nh->nh_lwtstate = lwtstate;
++		}
+ 		nh->nh_oif = cfg->fc_oif;
+ 		nh->nh_gw = cfg->fc_gw;
+ 		nh->nh_flags = cfg->fc_flags;
+@@ -1038,6 +1125,8 @@ int fib_dump_info(struct sk_buff *skb, u32 portid, u32 seq, int event,
+ 		    nla_put_u32(skb, RTA_FLOW, fi->fib_nh[0].nh_tclassid))
+ 			goto nla_put_failure;
+ #endif
++	if (fi->fib_nh->nh_lwtstate)
++			lwtunnel_fill_encap(skb, fi->fib_nh->nh_lwtstate);
+ 	}
+ #ifdef CONFIG_IP_ROUTE_MULTIPATH
+ 	if (fi->fib_nhs > 1) {
+@@ -1065,6 +1154,8 @@ int fib_dump_info(struct sk_buff *skb, u32 portid, u32 seq, int event,
+ 			    nla_put_u32(skb, RTA_FLOW, nh->nh_tclassid))
+ 				goto nla_put_failure;
+ #endif
++			if (nh->nh_lwtstate)
++				lwtunnel_fill_encap(skb, nh->nh_lwtstate);
+ 			/* length of rtnetlink header + attributes */
+ 			rtnh->rtnh_len = nlmsg_get_pos(skb) - (void *) rtnh;
+ 		} endfor_nexthops(fi);
+diff --git a/net/ipv4/icmp.c b/net/ipv4/icmp.c
+index f5203fb..c0556f1 100644
+--- a/net/ipv4/icmp.c
++++ b/net/ipv4/icmp.c
+@@ -496,6 +496,7 @@ static struct rtable *icmp_route_lookup(struct net *net,
+ 		}
+ 		/* Ugh! */
+ 		orefdst = skb_in->_skb_refdst; /* save old refdst */
++		skb_dst_set(skb_in, NULL);
+ 		err = ip_route_input(skb_in, fl4_dec.daddr, fl4_dec.saddr,
+ 				     RT_TOS(tos), rt2->dst.dev);
+ 
+diff --git a/net/ipv4/ip_input.c b/net/ipv4/ip_input.c
+index 2db4c87..f4fc8a7 100644
+--- a/net/ipv4/ip_input.c
++++ b/net/ipv4/ip_input.c
+@@ -146,6 +146,7 @@
+ #include <net/xfrm.h>
+ #include <linux/mroute.h>
+ #include <linux/netlink.h>
++#include <net/dst_metadata.h>
+ 
+ /*
+  *	Process Router Attention IP option (RFC 2113)
+@@ -331,7 +332,7 @@ static int ip_rcv_finish(struct sock *sk, struct sk_buff *skb)
+ 	 *	Initialise the virtual path cache for the packet. It describes
+ 	 *	how the packet travels inside Linux networking.
+ 	 */
+-	if (!skb_dst(skb)) {
++	if (!skb_valid_dst(skb)) {
+ 		int err = ip_route_input_noref(skb, iph->daddr, iph->saddr,
+ 					       iph->tos, skb->dev);
+ 		if (unlikely(err)) {
+diff --git a/net/ipv4/ip_tunnel_core.c b/net/ipv4/ip_tunnel_core.c
+index ce63ab2..f549dd8 100644
+--- a/net/ipv4/ip_tunnel_core.c
++++ b/net/ipv4/ip_tunnel_core.c
+@@ -32,6 +32,7 @@
+ #include <linux/etherdevice.h>
+ #include <linux/if_ether.h>
+ #include <linux/if_vlan.h>
++#include <linux/static_key.h>
+ 
+ #include <net/ip.h>
+ #include <net/icmp.h>
+@@ -204,3 +205,132 @@ struct rtnl_link_stats64 *ip_tunnel_get_stats64(struct net_device *dev,
+ 	return tot;
+ }
+ EXPORT_SYMBOL_GPL(ip_tunnel_get_stats64);
++
++static const struct nla_policy ip_tun_policy[IP_TUN_MAX + 1] = {
++	[IP_TUN_ID]		= { .type = NLA_U64 },
++	[IP_TUN_DST]		= { .type = NLA_U32 },
++	[IP_TUN_SRC]		= { .type = NLA_U32 },
++	[IP_TUN_TTL]		= { .type = NLA_U8 },
++	[IP_TUN_TOS]		= { .type = NLA_U8 },
++	[IP_TUN_SPORT]		= { .type = NLA_U16 },
++	[IP_TUN_DPORT]		= { .type = NLA_U16 },
++	[IP_TUN_FLAGS]		= { .type = NLA_U16 },
++};
++
++static int ip_tun_build_state(struct net_device *dev, struct nlattr *attr,
++			      struct lwtunnel_state **ts)
++{
++	struct ip_tunnel_info *tun_info;
++	struct lwtunnel_state *new_state;
++	struct nlattr *tb[IP_TUN_MAX + 1];
++	int err;
++
++	err = nla_parse_nested(tb, IP_TUN_MAX, attr, ip_tun_policy);
++	if (err < 0)
++		return err;
++
++	new_state = lwtunnel_state_alloc(sizeof(*tun_info));
++	if (!new_state)
++		return -ENOMEM;
++
++	new_state->type = LWTUNNEL_ENCAP_IP;
++
++	tun_info = lwt_tun_info(new_state);
++
++	if (tb[IP_TUN_ID])
++		tun_info->key.tun_id = nla_get_u64(tb[IP_TUN_ID]);
++
++	if (tb[IP_TUN_DST])
++		tun_info->key.ipv4_dst = nla_get_be32(tb[IP_TUN_DST]);
++
++	if (tb[IP_TUN_SRC])
++		tun_info->key.ipv4_src = nla_get_be32(tb[IP_TUN_SRC]);
++
++	if (tb[IP_TUN_TTL])
++		tun_info->key.ipv4_ttl = nla_get_u8(tb[IP_TUN_TTL]);
++
++	if (tb[IP_TUN_TOS])
++		tun_info->key.ipv4_tos = nla_get_u8(tb[IP_TUN_TOS]);
++
++	if (tb[IP_TUN_SPORT])
++		tun_info->key.tp_src = nla_get_be16(tb[IP_TUN_SPORT]);
++
++	if (tb[IP_TUN_DPORT])
++		tun_info->key.tp_dst = nla_get_be16(tb[IP_TUN_DPORT]);
++
++	if (tb[IP_TUN_FLAGS])
++		tun_info->key.tun_flags = nla_get_u16(tb[IP_TUN_FLAGS]);
++
++	tun_info->mode = IP_TUNNEL_INFO_TX;
++	tun_info->options = NULL;
++	tun_info->options_len = 0;
++
++	*ts = new_state;
++
++	return 0;
++}
++
++static int ip_tun_fill_encap_info(struct sk_buff *skb,
++				  struct lwtunnel_state *lwtstate)
++{
++	struct ip_tunnel_info *tun_info = lwt_tun_info(lwtstate);
++
++	if (nla_put_u64(skb, IP_TUN_ID, tun_info->key.tun_id) ||
++	    nla_put_be32(skb, IP_TUN_DST, tun_info->key.ipv4_dst) ||
++	    nla_put_be32(skb, IP_TUN_SRC, tun_info->key.ipv4_src) ||
++	    nla_put_u8(skb, IP_TUN_TOS, tun_info->key.ipv4_tos) ||
++	    nla_put_u8(skb, IP_TUN_TTL, tun_info->key.ipv4_ttl) ||
++	    nla_put_u16(skb, IP_TUN_SPORT, tun_info->key.tp_src) ||
++	    nla_put_u16(skb, IP_TUN_DPORT, tun_info->key.tp_dst) ||
++	    nla_put_u16(skb, IP_TUN_FLAGS, tun_info->key.tun_flags))
++		return -ENOMEM;
++
++	return 0;
++}
++
++static int ip_tun_encap_nlsize(struct lwtunnel_state *lwtstate)
++{
++	return nla_total_size(8)	/* IP_TUN_ID */
++		+ nla_total_size(4)	/* IP_TUN_DST */
++		+ nla_total_size(4)	/* IP_TUN_SRC */
++		+ nla_total_size(1)	/* IP_TUN_TOS */
++		+ nla_total_size(1)	/* IP_TUN_TTL */
++		+ nla_total_size(2)	/* IP_TUN_SPORT */
++		+ nla_total_size(2)	/* IP_TUN_DPORT */
++		+ nla_total_size(2);	/* IP_TUN_FLAGS */
++}
++
++static const struct lwtunnel_encap_ops ip_tun_lwt_ops = {
++	.build_state = ip_tun_build_state,
++	.fill_encap = ip_tun_fill_encap_info,
++	.get_encap_size = ip_tun_encap_nlsize,
++};
++
++static int __init ip_tunnel_core_init(void)
++{
++	lwtunnel_encap_add_ops(&ip_tun_lwt_ops, LWTUNNEL_ENCAP_IP);
++
++	return 0;
++}
++module_init(ip_tunnel_core_init);
++
++static void __exit ip_tunnel_core_exit(void)
++{
++	lwtunnel_encap_del_ops(&ip_tun_lwt_ops, LWTUNNEL_ENCAP_IP);
++}
++module_exit(ip_tunnel_core_exit);
++
++struct static_key ip_tunnel_metadata_cnt = STATIC_KEY_INIT_FALSE;
++EXPORT_SYMBOL(ip_tunnel_metadata_cnt);
++
++void ip_tunnel_need_metadata(void)
++{
++	static_key_slow_inc(&ip_tunnel_metadata_cnt);
++}
++EXPORT_SYMBOL_GPL(ip_tunnel_need_metadata);
++
++void ip_tunnel_unneed_metadata(void)
++{
++	static_key_slow_dec(&ip_tunnel_metadata_cnt);
++}
++EXPORT_SYMBOL_GPL(ip_tunnel_unneed_metadata);
+diff --git a/net/ipv4/route.c b/net/ipv4/route.c
+index f45f2a1..af23ad3 100644
+--- a/net/ipv4/route.c
++++ b/net/ipv4/route.c
+@@ -91,6 +91,7 @@
+ #include <linux/slab.h>
+ #include <linux/jhash.h>
+ #include <net/dst.h>
++#include <net/dst_metadata.h>
+ #include <net/net_namespace.h>
+ #include <net/protocol.h>
+ #include <net/ip.h>
+@@ -102,6 +103,7 @@
+ #include <net/tcp.h>
+ #include <net/icmp.h>
+ #include <net/xfrm.h>
++#include <net/lwtunnel.h>
+ #include <net/netevent.h>
+ #include <net/rtnetlink.h>
+ #ifdef CONFIG_SYSCTL
+@@ -109,6 +111,7 @@
+ #include <linux/kmemleak.h>
+ #endif
+ #include <net/secure_seq.h>
++#include <net/ip_tunnels.h>
+ 
+ #define RT_FL_TOS(oldflp4) \
+ 	((oldflp4)->flowi4_tos & (IPTOS_RT_MASK | RTO_ONLINK))
+@@ -1357,6 +1360,7 @@ static void ipv4_dst_destroy(struct dst_entry *dst)
+ 		list_del(&rt->rt_uncached);
+ 		spin_unlock_bh(&ul->lock);
+ 	}
++	lwtunnel_state_put(rt->rt_lwtstate);
+ }
+ 
+ void rt_flush_dev(struct net_device *dev)
+@@ -1405,6 +1409,12 @@ static void rt_set_nexthop(struct rtable *rt, __be32 daddr,
+ #ifdef CONFIG_IP_ROUTE_CLASSID
+ 		rt->dst.tclassid = nh->nh_tclassid;
+ #endif
++		if (nh->nh_lwtstate) {
++			lwtunnel_state_get(nh->nh_lwtstate);
++			rt->rt_lwtstate = nh->nh_lwtstate;
++		} else {
++			rt->rt_lwtstate = NULL;
++		}
+ 		if (unlikely(fnhe))
+ 			cached = rt_bind_exception(rt, fnhe, daddr);
+ 		else if (!(rt->dst.flags & DST_NOCACHE))
+@@ -1490,6 +1500,7 @@ static int ip_route_input_mc(struct sk_buff *skb, __be32 daddr, __be32 saddr,
+ 	rth->rt_gateway	= 0;
+ 	rth->rt_uses_gateway = 0;
+ 	INIT_LIST_HEAD(&rth->rt_uncached);
++	rth->rt_lwtstate = NULL;
+ 	if (our) {
+ 		rth->dst.input= ip_local_deliver;
+ 		rth->rt_flags |= RTCF_LOCAL;
+@@ -1620,12 +1631,15 @@ static int __mkroute_input(struct sk_buff *skb,
+ 	rth->rt_gateway	= 0;
+ 	rth->rt_uses_gateway = 0;
+ 	INIT_LIST_HEAD(&rth->rt_uncached);
++	rth->rt_lwtstate = NULL;
+ 	RT_CACHE_STAT_INC(in_slow_tot);
+ 
+ 	rth->dst.input = ip_forward;
+ 	rth->dst.output = ip_output;
+ 
+ 	rt_set_nexthop(rth, daddr, res, fnhe, res->fi, res->type, itag);
++	if (lwtunnel_output_redirect(rth->rt_lwtstate))
++		rth->dst.output = lwtunnel_output;
+ 	skb_dst_set(skb, &rth->dst);
+ out:
+ 	err = 0;
+@@ -1664,6 +1678,7 @@ static int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
+ {
+ 	struct fib_result res;
+ 	struct in_device *in_dev = __in_dev_get_rcu(dev);
++	struct ip_tunnel_info *tun_info;
+ 	struct flowi4	fl4;
+ 	unsigned int	flags = 0;
+ 	u32		itag = 0;
+@@ -1681,6 +1696,13 @@ static int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
+ 	   by fib_lookup.
+ 	 */
+ 
++	tun_info = skb_tunnel_info(skb, AF_INET);
++	if (tun_info && tun_info->mode == IP_TUNNEL_INFO_RX)
++		fl4.flowi4_tun_key.tun_id = tun_info->key.tun_id;
++	else
++		fl4.flowi4_tun_key.tun_id = 0;
++	skb_dst_drop(skb);
++
+ 	if (ipv4_is_multicast(saddr) || ipv4_is_lbcast(saddr))
+ 		goto martian_source;
+ 
+@@ -1794,6 +1816,8 @@ local_input:
+ 	rth->rt_gateway	= 0;
+ 	rth->rt_uses_gateway = 0;
+ 	INIT_LIST_HEAD(&rth->rt_uncached);
++	rth->rt_lwtstate = NULL;
++
+ 	RT_CACHE_STAT_INC(in_slow_tot);
+ 	if (res.type == RTN_UNREACHABLE) {
+ 		rth->dst.input= ip_error;
+@@ -1983,7 +2007,7 @@ add:
+ 	rth->rt_gateway = 0;
+ 	rth->rt_uses_gateway = 0;
+ 	INIT_LIST_HEAD(&rth->rt_uncached);
+-
++	rth->rt_lwtstate = NULL;
+ 	RT_CACHE_STAT_INC(out_slow_tot);
+ 
+ 	if (flags & RTCF_LOCAL)
+@@ -2262,7 +2286,7 @@ struct dst_entry *ipv4_blackhole_route(struct net *net, struct dst_entry *dst_or
+ 		rt->rt_uses_gateway = ort->rt_uses_gateway;
+ 
+ 		INIT_LIST_HEAD(&rt->rt_uncached);
+-
++		rt->rt_lwtstate = NULL;
+ 		dst_free(new);
+ 	}
+ 
+diff --git a/net/ipv6/ip6_fib.c b/net/ipv6/ip6_fib.c
+index bde57b1..041b8c7 100644
+--- a/net/ipv6/ip6_fib.c
++++ b/net/ipv6/ip6_fib.c
+@@ -35,6 +35,7 @@
+ 
+ #include <net/ip6_fib.h>
+ #include <net/ip6_route.h>
++#include <net/lwtunnel.h>
+ 
+ #define RT6_DEBUG 2
+ 
+@@ -157,7 +158,11 @@ static void node_free(struct fib6_node *fn)
+ static void rt6_release(struct rt6_info *rt)
+ {
+ 	if (atomic_dec_and_test(&rt->rt6i_ref))
++	{
++		lwtunnel_state_put(rt->rt6i_lwtstate);
+ 		dst_free(&rt->dst);
++//FIXME
++	}
+ }
+ 
+ static void fib6_link_table(struct net *net, struct fib6_table *tb)
+diff --git a/net/ipv6/route.c b/net/ipv6/route.c
+index c73ae50..bf2a9ca 100644
+--- a/net/ipv6/route.c
++++ b/net/ipv6/route.c
+@@ -64,6 +64,7 @@
+ #ifdef CONFIG_SYSCTL
+ #include <linux/sysctl.h>
+ #endif
++#include <net/lwtunnel.h>
+ 
+ enum rt6_nud_state {
+ 	RT6_NUD_FAIL_HARD = -3,
+@@ -1588,6 +1589,19 @@ int ip6_route_add(struct fib6_config *cfg)
+ 
+ 	rt->dst.output = ip6_output;
+ 
++	if (cfg->fc_encap) {
++		struct lwtunnel_state *lwtstate;
++
++		err = lwtunnel_build_state(dev, cfg->fc_encap_type,
++					   cfg->fc_encap, &lwtstate);
++		if (err)
++			goto out;
++		lwtunnel_state_get(lwtstate);
++		rt->rt6i_lwtstate = lwtstate;
++		rt->dst.output = lwtunnel_output6;
++	}
++
++
+ 	ipv6_addr_prefix(&rt->rt6i_dst.addr, &cfg->fc_dst, cfg->fc_dst_len);
+ 	rt->rt6i_dst.plen = cfg->fc_dst_len;
+ 	if (rt->rt6i_dst.plen == 128) {
+@@ -2400,6 +2414,8 @@ static const struct nla_policy rtm_ipv6_policy[RTA_MAX+1] = {
+ 	[RTA_METRICS]           = { .type = NLA_NESTED },
+ 	[RTA_MULTIPATH]		= { .len = sizeof(struct rtnexthop) },
+ 	[RTA_PREF]              = { .type = NLA_U8 },
++	[RTA_ENCAP_TYPE]	= { .type = NLA_U16 },
++	[RTA_ENCAP]		= { .type = NLA_NESTED },
+ };
+ 
+ static int rtm_to_fib6_config(struct sk_buff *skb, struct nlmsghdr *nlh,
+@@ -2490,6 +2506,11 @@ static int rtm_to_fib6_config(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 			pref = ICMPV6_ROUTER_PREF_MEDIUM;
+ 		cfg->fc_flags |= RTF_PREF(pref);
+ 	}
++	if (tb[RTA_ENCAP])
++		cfg->fc_encap = tb[RTA_ENCAP];
++
++	if (tb[RTA_ENCAP_TYPE])
++		cfg->fc_encap_type = nla_get_u16(tb[RTA_ENCAP_TYPE]);
+ 
+ 	err = 0;
+ errout:
+@@ -2523,6 +2544,10 @@ beginning:
+ 				r_cfg.fc_gateway = nla_get_in6_addr(nla);
+ 				r_cfg.fc_flags |= RTF_GATEWAY;
+ 			}
++			r_cfg.fc_encap = nla_find(attrs, attrlen, RTA_ENCAP);
++			nla = nla_find(attrs, attrlen, RTA_ENCAP_TYPE);
++			if (nla)
++				r_cfg.fc_encap_type = nla_get_u16(nla);
+ 		}
+ 		err = add ? ip6_route_add(&r_cfg) : ip6_route_del(&r_cfg);
+ 		if (err) {
+@@ -2585,7 +2610,7 @@ static int inet6_rtm_newroute(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 		return ip6_route_add(&cfg);
+ }
+ 
+-static inline size_t rt6_nlmsg_size(void)
++static inline size_t rt6_nlmsg_size(struct rt6_info *rt)
+ {
+ 	return NLMSG_ALIGN(sizeof(struct rtmsg))
+ 	       + nla_total_size(16) /* RTA_SRC */
+@@ -2599,7 +2624,8 @@ static inline size_t rt6_nlmsg_size(void)
+ 	       + RTAX_MAX * nla_total_size(4) /* RTA_METRICS */
+ 	       + nla_total_size(sizeof(struct rta_cacheinfo))
+ 	       + nla_total_size(TCP_CA_NAME_MAX) /* RTAX_CC_ALGO */
+-	       + nla_total_size(1); /* RTA_PREF */
++	       + nla_total_size(1) /* RTA_PREF */
++	       + lwtunnel_get_encap_size(rt->rt6i_lwtstate);
+ }
+ 
+ static int rt6_fill_node(struct net *net,
+@@ -2742,7 +2768,7 @@ static int rt6_fill_node(struct net *net,
+ 
+ 	if (nla_put_u8(skb, RTA_PREF, IPV6_EXTRACT_PREF(rt->rt6i_flags)))
+ 		goto nla_put_failure;
+-
++	lwtunnel_fill_encap(skb, rt->rt6i_lwtstate);
+ 	nlmsg_end(skb, nlh);
+ 	return 0;
+ 
+@@ -2869,7 +2895,7 @@ void inet6_rt_notify(int event, struct rt6_info *rt, struct nl_info *info)
+ 	err = -ENOBUFS;
+ 	seq = info->nlh ? info->nlh->nlmsg_seq : 0;
+ 
+-	skb = nlmsg_new(rt6_nlmsg_size(), gfp_any());
++	skb = nlmsg_new(rt6_nlmsg_size(rt), gfp_any());
+ 	if (!skb)
+ 		goto errout;
+ 
+diff --git a/net/mpls/Kconfig b/net/mpls/Kconfig
+index 17bde79..5c467ef 100644
+--- a/net/mpls/Kconfig
++++ b/net/mpls/Kconfig
+@@ -24,7 +24,13 @@ config NET_MPLS_GSO
+ 
+ config MPLS_ROUTING
+ 	tristate "MPLS: routing support"
+-	help
++	---help---
+ 	 Add support for forwarding of mpls packets.
+ 
++config MPLS_IPTUNNEL
++	tristate "MPLS: IP over MPLS tunnel support"
++	depends on LWTUNNEL && MPLS_ROUTING
++	---help---
++	 mpls ip tunnel support.
++
+ endif # MPLS
+diff --git a/net/mpls/Makefile b/net/mpls/Makefile
+index 65bbe68..9ca9236 100644
+--- a/net/mpls/Makefile
++++ b/net/mpls/Makefile
+@@ -3,5 +3,6 @@
+ #
+ obj-$(CONFIG_NET_MPLS_GSO) += mpls_gso.o
+ obj-$(CONFIG_MPLS_ROUTING) += mpls_router.o
++obj-$(CONFIG_MPLS_IPTUNNEL) += mpls_iptunnel.o
+ 
+ mpls_router-y := af_mpls.o
+diff --git a/net/mpls/af_mpls.c b/net/mpls/af_mpls.c
+index 1f93a59..6e66911 100644
+--- a/net/mpls/af_mpls.c
++++ b/net/mpls/af_mpls.c
+@@ -58,10 +58,11 @@ static inline struct mpls_dev *mpls_dev_get(const struct net_device *dev)
+ 	return rcu_dereference_rtnl(dev->mpls_ptr);
+ }
+ 
+-static bool mpls_output_possible(const struct net_device *dev)
++bool mpls_output_possible(const struct net_device *dev)
+ {
+ 	return dev && (dev->flags & IFF_UP) && netif_carrier_ok(dev);
+ }
++EXPORT_SYMBOL_GPL(mpls_output_possible);
+ 
+ static unsigned int mpls_rt_header_size(const struct mpls_route *rt)
+ {
+@@ -69,13 +70,14 @@ static unsigned int mpls_rt_header_size(const struct mpls_route *rt)
+ 	return rt->rt_labels * sizeof(struct mpls_shim_hdr);
+ }
+ 
+-static unsigned int mpls_dev_mtu(const struct net_device *dev)
++unsigned int mpls_dev_mtu(const struct net_device *dev)
+ {
+ 	/* The amount of data the layer 2 frame can hold */
+ 	return dev->mtu;
+ }
++EXPORT_SYMBOL_GPL(mpls_dev_mtu);
+ 
+-static bool mpls_pkt_too_big(const struct sk_buff *skb, unsigned int mtu)
++bool mpls_pkt_too_big(const struct sk_buff *skb, unsigned int mtu)
+ {
+ 	if (skb->len <= mtu)
+ 		return false;
+@@ -85,6 +87,7 @@ static bool mpls_pkt_too_big(const struct sk_buff *skb, unsigned int mtu)
+ 
+ 	return true;
+ }
++EXPORT_SYMBOL_GPL(mpls_pkt_too_big);
+ 
+ static bool mpls_egress(struct mpls_route *rt, struct sk_buff *skb,
+ 			struct mpls_entry_decoded dec)
+@@ -626,6 +629,7 @@ int nla_put_labels(struct sk_buff *skb, int attrtype,
+ 
+ 	return 0;
+ }
++EXPORT_SYMBOL_GPL(nla_put_labels);
+ 
+ int nla_get_labels(const struct nlattr *nla,
+ 		   u32 max_labels, u32 *labels, u32 label[])
+@@ -671,6 +675,7 @@ int nla_get_labels(const struct nlattr *nla,
+ 	*labels = nla_labels;
+ 	return 0;
+ }
++EXPORT_SYMBOL_GPL(nla_get_labels);
+ 
+ static int rtm_to_route_config(struct sk_buff *skb,  struct nlmsghdr *nlh,
+ 			       struct mpls_route_config *cfg)
+diff --git a/net/mpls/internal.h b/net/mpls/internal.h
+index 8cabeb5..2681a4b 100644
+--- a/net/mpls/internal.h
++++ b/net/mpls/internal.h
+@@ -50,7 +50,12 @@ static inline struct mpls_entry_decoded mpls_entry_decode(struct mpls_shim_hdr *
+ 	return result;
+ }
+ 
+-int nla_put_labels(struct sk_buff *skb, int attrtype,  u8 labels, const u32 label[]);
+-int nla_get_labels(const struct nlattr *nla, u32 max_labels, u32 *labels, u32 label[]);
++int nla_put_labels(struct sk_buff *skb, int attrtype,  u8 labels,
++		   const u32 label[]);
++int nla_get_labels(const struct nlattr *nla, u32 max_labels, u32 *labels,
++		   u32 label[]);
++bool mpls_output_possible(const struct net_device *dev);
++unsigned int mpls_dev_mtu(const struct net_device *dev);
++bool mpls_pkt_too_big(const struct sk_buff *skb, unsigned int mtu);
+ 
+ #endif /* MPLS_INTERNAL_H */
+diff --git a/net/mpls/mpls_iptunnel.c b/net/mpls/mpls_iptunnel.c
+new file mode 100644
+index 0000000..eea096f
+--- /dev/null
++++ b/net/mpls/mpls_iptunnel.c
+@@ -0,0 +1,233 @@
++/*
++ * mpls tunnels	An implementation mpls tunnels using the light weight tunnel
++ *		infrastructure
++ *
++ * Authors:	Roopa Prabhu, <roopa@cumulusnetworks.com>
++ *
++ *		This program is free software; you can redistribute it and/or
++ *		modify it under the terms of the GNU General Public License
++ *		as published by the Free Software Foundation; either version
++ *		2 of the License, or (at your option) any later version.
++ *
++ */
++#include <linux/types.h>
++#include <linux/skbuff.h>
++#include <linux/net.h>
++#include <linux/module.h>
++#include <linux/mpls.h>
++#include <linux/vmalloc.h>
++#include <net/ip.h>
++#include <net/dst.h>
++#include <net/lwtunnel.h>
++#include <net/netevent.h>
++#include <net/netns/generic.h>
++#include <net/ip6_fib.h>
++#include <net/route.h>
++#include <net/mpls_iptunnel.h>
++#include <linux/mpls_iptunnel.h>
++#include "internal.h"
++
++static const struct nla_policy mpls_iptunnel_policy[MPLS_IPTUNNEL_MAX + 1] = {
++	[MPLS_IPTUNNEL_DST]	= { .type = NLA_U32 },
++};
++
++static unsigned int mpls_encap_size(struct mpls_iptunnel_encap *en)
++{
++	/* The size of the layer 2.5 labels to be added for this route */
++	return en->labels * sizeof(struct mpls_shim_hdr);
++}
++
++int mpls_output(struct sock *sk, struct sk_buff *skb)
++{
++	struct mpls_iptunnel_encap *tun_encap_info;
++	struct mpls_shim_hdr *hdr;
++	struct net_device *out_dev;
++	unsigned int hh_len;
++	unsigned int new_header_size;
++	unsigned int mtu;
++	struct dst_entry *dst = skb_dst(skb);
++	struct rtable *rt = NULL;
++	struct rt6_info *rt6 = NULL;
++	struct lwtunnel_state *lwtstate = NULL;
++	int err = 0;
++	bool bos;
++	int i;
++	unsigned int ttl;
++
++	/* Obtain the ttl */
++	if (skb->protocol == htons(ETH_P_IP)) {
++		ttl = ip_hdr(skb)->ttl;
++		rt = (struct rtable *)dst;
++		lwtstate = rt->rt_lwtstate;
++	} else if (skb->protocol == htons(ETH_P_IPV6)) {
++		ttl = ipv6_hdr(skb)->hop_limit;
++		rt6 = (struct rt6_info *)dst;
++		lwtstate = rt6->rt6i_lwtstate;
++	} else {
++		goto drop;
++	}
++
++	skb_orphan(skb);
++
++	/* Find the output device */
++	out_dev = rcu_dereference(dst->dev);
++	if (!mpls_output_possible(out_dev) ||
++	    !lwtstate || skb_warn_if_lro(skb))
++		goto drop;
++
++	skb_forward_csum(skb);
++
++	tun_encap_info = mpls_lwtunnel_encap(lwtstate);
++
++	/* Verify the destination can hold the packet */
++	new_header_size = mpls_encap_size(tun_encap_info);
++	mtu = mpls_dev_mtu(out_dev);
++	if (mpls_pkt_too_big(skb, mtu - new_header_size))
++		goto drop;
++
++	hh_len = LL_RESERVED_SPACE(out_dev);
++	if (!out_dev->header_ops)
++		hh_len = 0;
++
++	/* Ensure there is enough space for the headers in the skb */
++	if (skb_cow(skb, hh_len + new_header_size))
++		goto drop;
++
++	skb_push(skb, new_header_size);
++	skb_reset_network_header(skb);
++
++	skb->dev = out_dev;
++	skb->protocol = htons(ETH_P_MPLS_UC);
++
++	/* Push the new labels */
++	hdr = mpls_hdr(skb);
++	bos = true;
++	for (i = tun_encap_info->labels - 1; i >= 0; i--) {
++		hdr[i] = mpls_entry_encode(tun_encap_info->label[i],
++					   ttl, 0, bos);
++		bos = false;
++	}
++
++	if (rt)
++		err = neigh_xmit(NEIGH_ARP_TABLE, out_dev, &rt->rt_gateway,
++				 skb);
++	else if (rt6)
++		err = neigh_xmit(NEIGH_ND_TABLE, out_dev, &rt6->rt6i_gateway,
++				 skb);
++	if (err)
++		net_dbg_ratelimited("%s: packet transmission failed: %d\n",
++				    __func__, err);
++
++	return 0;
++
++drop:
++	kfree_skb(skb);
++	return -EINVAL;
++}
++
++static int mpls_build_state(struct net_device *dev, struct nlattr *nla,
++			    struct lwtunnel_state **ts)
++{
++	struct mpls_iptunnel_encap *tun_encap_info;
++	struct nlattr *tb[MPLS_IPTUNNEL_MAX + 1];
++	struct lwtunnel_state *newts;
++	int tun_encap_info_len;
++	int ret;
++
++	ret = nla_parse_nested(tb, MPLS_IPTUNNEL_MAX, nla,
++			       mpls_iptunnel_policy);
++	if (ret < 0)
++		return ret;
++
++	if (!tb[MPLS_IPTUNNEL_DST])
++		return -EINVAL;
++
++	tun_encap_info_len = sizeof(*tun_encap_info);
++
++	newts = lwtunnel_state_alloc(tun_encap_info_len);
++	if (!newts)
++		return -ENOMEM;
++
++	newts->len = tun_encap_info_len;
++	tun_encap_info = mpls_lwtunnel_encap(newts);
++	ret = nla_get_labels(tb[MPLS_IPTUNNEL_DST], MAX_NEW_LABELS,
++			     &tun_encap_info->labels, tun_encap_info->label);
++	if (ret)
++		goto errout;
++	newts->type = LWTUNNEL_ENCAP_MPLS;
++	newts->flags |= LWTUNNEL_STATE_OUTPUT_REDIRECT;
++
++	*ts = newts;
++
++	return 0;
++
++errout:
++	kfree(newts);
++	*ts = NULL;
++
++	return ret;
++}
++
++static int mpls_fill_encap_info(struct sk_buff *skb,
++				struct lwtunnel_state *lwtstate)
++{
++	struct mpls_iptunnel_encap *tun_encap_info;
++	
++	tun_encap_info = mpls_lwtunnel_encap(lwtstate);
++
++	if (nla_put_labels(skb, MPLS_IPTUNNEL_DST, tun_encap_info->labels,
++			   tun_encap_info->label))
++		goto nla_put_failure;
++
++	return 0;
++
++nla_put_failure:
++	return -EMSGSIZE;
++}
++
++static int mpls_encap_nlsize(struct lwtunnel_state *lwtstate)
++{
++	struct mpls_iptunnel_encap *tun_encap_info;
++
++	tun_encap_info = mpls_lwtunnel_encap(lwtstate);
++
++	return nla_total_size(tun_encap_info->labels * 4);
++}
++
++static int mpls_encap_cmp(struct lwtunnel_state *a, struct lwtunnel_state *b)
++{
++	struct mpls_iptunnel_encap *a_hdr = mpls_lwtunnel_encap(a);
++	struct mpls_iptunnel_encap *b_hdr = mpls_lwtunnel_encap(b);
++	int l;
++
++	if (a_hdr->labels != b_hdr->labels)
++		return 1;
++
++	for (l = 0; l < MAX_NEW_LABELS; l++)
++		if (a_hdr->label[l] != b_hdr->label[l])
++			return 1;
++	return 0;
++}
++
++static const struct lwtunnel_encap_ops mpls_iptun_ops = {
++	.build_state = mpls_build_state,
++	.output = mpls_output,
++	.fill_encap = mpls_fill_encap_info,
++	.get_encap_size = mpls_encap_nlsize,
++	.cmp_encap = mpls_encap_cmp,
++};
++
++static int __init mpls_iptunnel_init(void)
++{
++	return lwtunnel_encap_add_ops(&mpls_iptun_ops, LWTUNNEL_ENCAP_MPLS);
++}
++module_init(mpls_iptunnel_init);
++
++static void __exit mpls_iptunnel_exit(void)
++{
++	lwtunnel_encap_del_ops(&mpls_iptun_ops, LWTUNNEL_ENCAP_MPLS);
++}
++module_exit(mpls_iptunnel_exit);
++
++MODULE_DESCRIPTION("MultiProtocol Label Switching IP Tunnels");
++MODULE_LICENSE("GPL v2");
+diff --git a/net/openvswitch/Kconfig b/net/openvswitch/Kconfig
+index ed6b0f8..d6e6684 100644
+--- a/net/openvswitch/Kconfig
++++ b/net/openvswitch/Kconfig
+@@ -44,18 +44,6 @@ config OPENVSWITCH_GRE
+ 
+ 	  If unsure, say Y.
+ 
+-config OPENVSWITCH_VXLAN
+-	tristate "Open vSwitch VXLAN tunneling support"
+-	depends on OPENVSWITCH
+-	depends on VXLAN
+-	default OPENVSWITCH
+-	---help---
+-	  If you say Y here, then the Open vSwitch will be able create vxlan vport.
+-
+-	  Say N to exclude this support and reduce the binary size.
+-
+-	  If unsure, say Y.
+-
+ config OPENVSWITCH_GENEVE
+ 	tristate "Open vSwitch Geneve tunneling support"
+ 	depends on OPENVSWITCH
+diff --git a/net/openvswitch/Makefile b/net/openvswitch/Makefile
+index 91b9478..38e0e14 100644
+--- a/net/openvswitch/Makefile
++++ b/net/openvswitch/Makefile
+@@ -16,5 +16,4 @@ openvswitch-y := \
+ 	vport-netdev.o
+ 
+ obj-$(CONFIG_OPENVSWITCH_GENEVE)+= vport-geneve.o
+-obj-$(CONFIG_OPENVSWITCH_VXLAN)	+= vport-vxlan.o
+ obj-$(CONFIG_OPENVSWITCH_GRE)	+= vport-gre.o
+diff --git a/net/openvswitch/datapath.c b/net/openvswitch/datapath.c
+index 096c627..f56c303 100644
+--- a/net/openvswitch/datapath.c
++++ b/net/openvswitch/datapath.c
+@@ -176,7 +176,7 @@ static inline struct datapath *get_dp(struct net *net, int dp_ifindex)
+ const char *ovs_dp_name(const struct datapath *dp)
+ {
+ 	struct vport *vport = ovs_vport_ovsl_rcu(dp, OVSP_LOCAL);
+-	return vport->ops->get_name(vport);
++	return ovs_vport_name(vport);
+ }
+ 
+ static int get_dpifindex(const struct datapath *dp)
+@@ -188,7 +188,7 @@ static int get_dpifindex(const struct datapath *dp)
+ 
+ 	local = ovs_vport_rcu(dp, OVSP_LOCAL);
+ 	if (local)
+-		ifindex = netdev_vport_priv(local)->dev->ifindex;
++		ifindex = local->dev->ifindex;
+ 	else
+ 		ifindex = 0;
+ 
+@@ -1004,7 +1004,7 @@ static int ovs_flow_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 		}
+ 		ovs_unlock();
+ 
+-		ovs_nla_free_flow_actions(old_acts);
++		ovs_nla_free_flow_actions_rcu(old_acts);
+ 		ovs_flow_free(new_flow, false);
+ 	}
+ 
+@@ -1016,7 +1016,7 @@ err_unlock_ovs:
+ 	ovs_unlock();
+ 	kfree_skb(reply);
+ err_kfree_acts:
+-	kfree(acts);
++	ovs_nla_free_flow_actions(acts);
+ err_kfree_flow:
+ 	ovs_flow_free(new_flow, false);
+ error:
+@@ -1143,7 +1143,7 @@ static int ovs_flow_cmd_set(struct sk_buff *skb, struct genl_info *info)
+ 	if (reply)
+ 		ovs_notify(&dp_flow_genl_family, reply, info);
+ 	if (old_acts)
+-		ovs_nla_free_flow_actions(old_acts);
++		ovs_nla_free_flow_actions_rcu(old_acts);
+ 
+ 	return 0;
+ 
+@@ -1151,7 +1151,7 @@ err_unlock_ovs:
+ 	ovs_unlock();
+ 	kfree_skb(reply);
+ err_kfree_acts:
+-	kfree(acts);
++	ovs_nla_free_flow_actions(acts);
+ error:
+ 	return error;
+ }
+@@ -1786,7 +1786,7 @@ static int ovs_vport_cmd_fill_info(struct vport *vport, struct sk_buff *skb,
+ 	if (nla_put_u32(skb, OVS_VPORT_ATTR_PORT_NO, vport->port_no) ||
+ 	    nla_put_u32(skb, OVS_VPORT_ATTR_TYPE, vport->ops->type) ||
+ 	    nla_put_string(skb, OVS_VPORT_ATTR_NAME,
+-			   vport->ops->get_name(vport)))
++			   ovs_vport_name(vport)))
+ 		goto nla_put_failure;
+ 
+ 	ovs_vport_get_stats(vport, &vport_stats);
+@@ -2205,13 +2205,10 @@ static void __net_exit list_vports_from_net(struct net *net, struct net *dnet,
+ 			struct vport *vport;
+ 
+ 			hlist_for_each_entry(vport, &dp->ports[i], dp_hash_node) {
+-				struct netdev_vport *netdev_vport;
+-
+ 				if (vport->ops->type != OVS_VPORT_TYPE_INTERNAL)
+ 					continue;
+ 
+-				netdev_vport = netdev_vport_priv(vport);
+-				if (dev_net(netdev_vport->dev) == dnet)
++				if (dev_net(vport->dev) == dnet)
+ 					list_add(&vport->detach_list, head);
+ 			}
+ 		}
+diff --git a/net/openvswitch/datapath.h b/net/openvswitch/datapath.h
+index 4ec4a48..f735c2c 100644
+--- a/net/openvswitch/datapath.h
++++ b/net/openvswitch/datapath.h
+@@ -29,6 +29,7 @@
+ #include "flow.h"
+ #include "flow_table.h"
+ #include "vport.h"
++#include <net/ip_tunnels.h>
+ 
+ #define DP_MAX_PORTS           USHRT_MAX
+ #define DP_VPORT_HASH_BUCKETS  1024
+@@ -99,6 +100,7 @@ struct datapath {
+  */
+ struct ovs_skb_cb {
+ 	struct ovs_tunnel_info  *egress_tun_info;
++	struct ip_tunnel_info  *egress_tun_info;
+ 	struct vport		*input_vport;
+ };
+ #define OVS_CB(skb) ((struct ovs_skb_cb *)(skb)->cb)
+@@ -114,7 +116,7 @@ struct ovs_skb_cb {
+  * @egress_tun_info: If nonnull, becomes %OVS_PACKET_ATTR_EGRESS_TUN_KEY.
+  */
+ struct dp_upcall_info {
+-	const struct ovs_tunnel_info *egress_tun_info;
++	const struct ip_tunnel_info *egress_tun_info;
+ 	const struct nlattr *userdata;
+ 	u32 portid;
+ 	u8 cmd;
+diff --git a/net/openvswitch/dp_notify.c b/net/openvswitch/dp_notify.c
+index 2c631fe..a7a80a6 100644
+--- a/net/openvswitch/dp_notify.c
++++ b/net/openvswitch/dp_notify.c
+@@ -58,13 +58,10 @@ void ovs_dp_notify_wq(struct work_struct *work)
+ 			struct hlist_node *n;
+ 
+ 			hlist_for_each_entry_safe(vport, n, &dp->ports[i], dp_hash_node) {
+-				struct netdev_vport *netdev_vport;
+-
+ 				if (vport->ops->type != OVS_VPORT_TYPE_NETDEV)
+ 					continue;
+ 
+-				netdev_vport = netdev_vport_priv(vport);
+-				if (!(netdev_vport->dev->priv_flags & IFF_OVS_DATAPATH))
++				if (!(vport->dev->priv_flags & IFF_OVS_DATAPATH))
+ 					dp_detach_port_notify(vport);
+ 			}
+ 		}
+diff --git a/net/openvswitch/flow.c b/net/openvswitch/flow.c
+index 2dacc7b..a547e3c 100644
+--- a/net/openvswitch/flow.c
++++ b/net/openvswitch/flow.c
+@@ -682,12 +682,12 @@ int ovs_flow_key_update(struct sk_buff *skb, struct sw_flow_key *key)
+ 	return key_extract(skb, key);
+ }
+ 
+-int ovs_flow_key_extract(const struct ovs_tunnel_info *tun_info,
++int ovs_flow_key_extract(const struct ip_tunnel_info *tun_info,
+ 			 struct sk_buff *skb, struct sw_flow_key *key)
+ {
+ 	/* Extract metadata from packet. */
+ 	if (tun_info) {
+-		memcpy(&key->tun_key, &tun_info->tunnel, sizeof(key->tun_key));
++		memcpy(&key->tun_key, &tun_info->key, sizeof(key->tun_key));
+ 
+ 		if (tun_info->options) {
+ 			BUILD_BUG_ON((1 << (sizeof(tun_info->options_len) *
+diff --git a/net/openvswitch/flow.h b/net/openvswitch/flow.h
+index a076e44..b62cdb3 100644
+--- a/net/openvswitch/flow.h
++++ b/net/openvswitch/flow.h
+@@ -32,31 +32,11 @@
+ #include <linux/time.h>
+ #include <linux/flex_array.h>
+ #include <net/inet_ecn.h>
++#include <net/ip_tunnels.h>
++#include <net/dst_metadata.h>
+ 
+ struct sk_buff;
+ 
+-/* Used to memset ovs_key_ipv4_tunnel padding. */
+-#define OVS_TUNNEL_KEY_SIZE					\
+-	(offsetof(struct ovs_key_ipv4_tunnel, tp_dst) +		\
+-	 FIELD_SIZEOF(struct ovs_key_ipv4_tunnel, tp_dst))
+-
+-struct ovs_key_ipv4_tunnel {
+-	__be64 tun_id;
+-	__be32 ipv4_src;
+-	__be32 ipv4_dst;
+-	__be16 tun_flags;
+-	u8   ipv4_tos;
+-	u8   ipv4_ttl;
+-	__be16 tp_src;
+-	__be16 tp_dst;
+-} __packed __aligned(4); /* Minimize padding. */
+-
+-struct ovs_tunnel_info {
+-	struct ovs_key_ipv4_tunnel tunnel;
+-	const void *options;
+-	u8 options_len;
+-};
+-
+ /* Store options at the end of the array if they are less than the
+  * maximum size. This allows us to get the benefits of variable length
+  * matching for small options.
+@@ -66,54 +46,9 @@ struct ovs_tunnel_info {
+ #define TUN_METADATA_OPTS(flow_key, opt_len) \
+ 	((void *)((flow_key)->tun_opts + TUN_METADATA_OFFSET(opt_len)))
+ 
+-static inline void __ovs_flow_tun_info_init(struct ovs_tunnel_info *tun_info,
+-					    __be32 saddr, __be32 daddr,
+-					    u8 tos, u8 ttl,
+-					    __be16 tp_src,
+-					    __be16 tp_dst,
+-					    __be64 tun_id,
+-					    __be16 tun_flags,
+-					    const void *opts,
+-					    u8 opts_len)
+-{
+-	tun_info->tunnel.tun_id = tun_id;
+-	tun_info->tunnel.ipv4_src = saddr;
+-	tun_info->tunnel.ipv4_dst = daddr;
+-	tun_info->tunnel.ipv4_tos = tos;
+-	tun_info->tunnel.ipv4_ttl = ttl;
+-	tun_info->tunnel.tun_flags = tun_flags;
+-
+-	/* For the tunnel types on the top of IPsec, the tp_src and tp_dst of
+-	 * the upper tunnel are used.
+-	 * E.g: GRE over IPSEC, the tp_src and tp_port are zero.
+-	 */
+-	tun_info->tunnel.tp_src = tp_src;
+-	tun_info->tunnel.tp_dst = tp_dst;
+-
+-	/* Clear struct padding. */
+-	if (sizeof(tun_info->tunnel) != OVS_TUNNEL_KEY_SIZE)
+-		memset((unsigned char *)&tun_info->tunnel + OVS_TUNNEL_KEY_SIZE,
+-		       0, sizeof(tun_info->tunnel) - OVS_TUNNEL_KEY_SIZE);
+-
+-	tun_info->options = opts;
+-	tun_info->options_len = opts_len;
+-}
+-
+-static inline void ovs_flow_tun_info_init(struct ovs_tunnel_info *tun_info,
+-					  const struct iphdr *iph,
+-					  __be16 tp_src,
+-					  __be16 tp_dst,
+-					  __be64 tun_id,
+-					  __be16 tun_flags,
+-					  const void *opts,
+-					  u8 opts_len)
+-{
+-	__ovs_flow_tun_info_init(tun_info, iph->saddr, iph->daddr,
+-				 iph->tos, iph->ttl,
+-				 tp_src, tp_dst,
+-				 tun_id, tun_flags,
+-				 opts, opts_len);
+-}
++struct ovs_tunnel_info {
++	struct metadata_dst	*tun_dst;
++};
+ 
+ #define OVS_SW_FLOW_KEY_METADATA_SIZE			\
+ 	(offsetof(struct sw_flow_key, recirc_id) +	\
+@@ -122,7 +57,7 @@ static inline void ovs_flow_tun_info_init(struct ovs_tunnel_info *tun_info,
+ struct sw_flow_key {
+ 	u8 tun_opts[255];
+ 	u8 tun_opts_len;
+-	struct ovs_key_ipv4_tunnel tun_key;  /* Encapsulating tunnel key. */
++	struct ip_tunnel_key tun_key;	/* Encapsulating tunnel key. */
+ 	struct {
+ 		u32	priority;	/* Packet QoS priority. */
+ 		u32	skb_mark;	/* SKB mark. */
+@@ -273,7 +208,7 @@ void ovs_flow_stats_clear(struct sw_flow *);
+ u64 ovs_flow_used_time(unsigned long flow_jiffies);
+ 
+ int ovs_flow_key_update(struct sk_buff *skb, struct sw_flow_key *key);
+-int ovs_flow_key_extract(const struct ovs_tunnel_info *tun_info,
++int ovs_flow_key_extract(const struct ip_tunnel_info *tun_info,
+ 			 struct sk_buff *skb,
+ 			 struct sw_flow_key *key);
+ /* Extract key from packet coming from userspace. */
+diff --git a/net/openvswitch/flow_netlink.c b/net/openvswitch/flow_netlink.c
+index c691b1a..1c924b4 100644
+--- a/net/openvswitch/flow_netlink.c
++++ b/net/openvswitch/flow_netlink.c
+@@ -47,9 +47,9 @@
+ #include <net/ipv6.h>
+ #include <net/ndisc.h>
+ #include <net/mpls.h>
++#include <net/vxlan.h>
+ 
+ #include "flow_netlink.h"
+-#include "vport-vxlan.h"
+ 
+ struct ovs_len_tbl {
+ 	int len;
+@@ -475,7 +475,7 @@ static int vxlan_tun_opt_from_nlattr(const struct nlattr *a,
+ {
+ 	struct nlattr *tb[OVS_VXLAN_EXT_MAX+1];
+ 	unsigned long opt_key_offset;
+-	struct ovs_vxlan_opts opts;
++	struct vxlan_metadata opts;
+ 	int err;
+ 
+ 	BUILD_BUG_ON(sizeof(opts) > sizeof(match->key->tun_opts));
+@@ -626,7 +626,7 @@ static int ipv4_tun_from_nlattr(const struct nlattr *attr,
+ static int vxlan_opt_to_nlattr(struct sk_buff *skb,
+ 			       const void *tun_opts, int swkey_tun_opts_len)
+ {
+-	const struct ovs_vxlan_opts *opts = tun_opts;
++	const struct vxlan_metadata *opts = tun_opts;
+ 	struct nlattr *nla;
+ 
+ 	nla = nla_nest_start(skb, OVS_TUNNEL_KEY_ATTR_VXLAN_OPTS);
+@@ -641,7 +641,7 @@ static int vxlan_opt_to_nlattr(struct sk_buff *skb,
+ }
+ 
+ static int __ipv4_tun_to_nlattr(struct sk_buff *skb,
+-				const struct ovs_key_ipv4_tunnel *output,
++				const struct ip_tunnel_key *output,
+ 				const void *tun_opts, int swkey_tun_opts_len)
+ {
+ 	if (output->tun_flags & TUNNEL_KEY &&
+@@ -689,7 +689,7 @@ static int __ipv4_tun_to_nlattr(struct sk_buff *skb,
+ }
+ 
+ static int ipv4_tun_to_nlattr(struct sk_buff *skb,
+-			      const struct ovs_key_ipv4_tunnel *output,
++			      const struct ip_tunnel_key *output,
+ 			      const void *tun_opts, int swkey_tun_opts_len)
+ {
+ 	struct nlattr *nla;
+@@ -708,9 +708,9 @@ static int ipv4_tun_to_nlattr(struct sk_buff *skb,
+ }
+ 
+ int ovs_nla_put_egress_tunnel_key(struct sk_buff *skb,
+-				  const struct ovs_tunnel_info *egress_tun_info)
++				  const struct ip_tunnel_info *egress_tun_info)
+ {
+-	return __ipv4_tun_to_nlattr(skb, &egress_tun_info->tunnel,
++	return __ipv4_tun_to_nlattr(skb, &egress_tun_info->key,
+ 				    egress_tun_info->options,
+ 				    egress_tun_info->options_len);
+ }
+@@ -1548,11 +1548,48 @@ static struct sw_flow_actions *nla_alloc_flow_actions(int size, bool log)
+ 	return sfa;
+ }
+ 
++static void ovs_nla_free_set_action(const struct nlattr *a)
++{
++	const struct nlattr *ovs_key = nla_data(a);
++	struct ovs_tunnel_info *ovs_tun;
++
++	switch (nla_type(ovs_key)) {
++	case OVS_KEY_ATTR_TUNNEL_INFO:
++		ovs_tun = nla_data(ovs_key);
++		dst_release((struct dst_entry *)ovs_tun->tun_dst);
++		break;
++	}
++}
++
++void ovs_nla_free_flow_actions(struct sw_flow_actions *sf_acts)
++{
++	const struct nlattr *a;
++	int rem;
++
++	if (!sf_acts)
++		return;
++
++	nla_for_each_attr(a, sf_acts->actions, sf_acts->actions_len, rem) {
++		switch (nla_type(a)) {
++		case OVS_ACTION_ATTR_SET:
++			ovs_nla_free_set_action(a);
++			break;
++		}
++	}
++
++	kfree(sf_acts);
++}
++
++static void __ovs_nla_free_flow_actions(struct rcu_head *head)
++{
++	ovs_nla_free_flow_actions(container_of(head, struct sw_flow_actions, rcu));
++}
++
+ /* Schedules 'sf_acts' to be freed after the next RCU grace period.
+  * The caller must hold rcu_read_lock for this to be sensible. */
+-void ovs_nla_free_flow_actions(struct sw_flow_actions *sf_acts)
++void ovs_nla_free_flow_actions_rcu(struct sw_flow_actions *sf_acts)
+ {
+-	kfree_rcu(sf_acts, rcu);
++	call_rcu(&sf_acts->rcu, __ovs_nla_free_flow_actions);
+ }
+ 
+ static struct nlattr *reserve_sfa_size(struct sw_flow_actions **sfa,
+@@ -1746,7 +1783,9 @@ static int validate_and_copy_set_tun(const struct nlattr *attr,
+ {
+ 	struct sw_flow_match match;
+ 	struct sw_flow_key key;
+-	struct ovs_tunnel_info *tun_info;
++	struct metadata_dst *tun_dst;
++	struct ip_tunnel_info *tun_info;
++	struct ovs_tunnel_info *ovs_tun;
+ 	struct nlattr *a;
+ 	int err = 0, start, opts_type;
+ 
+@@ -1771,13 +1810,23 @@ static int validate_and_copy_set_tun(const struct nlattr *attr,
+ 	if (start < 0)
+ 		return start;
+ 
++	tun_dst = metadata_dst_alloc(key.tun_opts_len, GFP_KERNEL);
++	if (!tun_dst)
++		return -ENOMEM;
++
+ 	a = __add_action(sfa, OVS_KEY_ATTR_TUNNEL_INFO, NULL,
+-			 sizeof(*tun_info) + key.tun_opts_len, log);
+-	if (IS_ERR(a))
++			 sizeof(*ovs_tun), log);
++	if (IS_ERR(a)) {
++		dst_release((struct dst_entry *)tun_dst);
+ 		return PTR_ERR(a);
++	}
++
++	ovs_tun = nla_data(a);
++	ovs_tun->tun_dst = tun_dst;
+ 
+-	tun_info = nla_data(a);
+-	tun_info->tunnel = key.tun_key;
++	tun_info = &tun_dst->u.tun_info;
++	tun_info->mode = IP_TUNNEL_INFO_TX;
++	tun_info->key = key.tun_key;
+ 	tun_info->options_len = key.tun_opts_len;
+ 
+ 	if (tun_info->options_len) {
+@@ -2177,7 +2226,7 @@ int ovs_nla_copy_actions(const struct nlattr *attr,
+ 	err = __ovs_nla_copy_actions(attr, key, 0, sfa, key->eth.type,
+ 				     key->eth.tci, log);
+ 	if (err)
+-		kfree(*sfa);
++		ovs_nla_free_flow_actions(*sfa);
+ 
+ 	return err;
+ }
+@@ -2227,13 +2276,14 @@ static int set_action_to_attr(const struct nlattr *a, struct sk_buff *skb)
+ 
+ 	switch (key_type) {
+ 	case OVS_KEY_ATTR_TUNNEL_INFO: {
+-		struct ovs_tunnel_info *tun_info = nla_data(ovs_key);
++		struct ovs_tunnel_info *ovs_tun = nla_data(ovs_key);
++		struct ip_tunnel_info *tun_info = &ovs_tun->tun_dst->u.tun_info;
+ 
+ 		start = nla_nest_start(skb, OVS_ACTION_ATTR_SET);
+ 		if (!start)
+ 			return -EMSGSIZE;
+ 
+-		err = ipv4_tun_to_nlattr(skb, &tun_info->tunnel,
++		err = ipv4_tun_to_nlattr(skb, &tun_info->key,
+ 					 tun_info->options_len ?
+ 						tun_info->options : NULL,
+ 					 tun_info->options_len);
+diff --git a/net/openvswitch/flow_netlink.h b/net/openvswitch/flow_netlink.h
+index 5c3d75b..acd0744 100644
+--- a/net/openvswitch/flow_netlink.h
++++ b/net/openvswitch/flow_netlink.h
+@@ -55,7 +55,7 @@ int ovs_nla_put_mask(const struct sw_flow *flow, struct sk_buff *skb);
+ int ovs_nla_get_match(struct sw_flow_match *, const struct nlattr *key,
+ 		      const struct nlattr *mask, bool log);
+ int ovs_nla_put_egress_tunnel_key(struct sk_buff *,
+-				  const struct ovs_tunnel_info *);
++				  const struct ip_tunnel_info *);
+ 
+ bool ovs_nla_get_ufid(struct sw_flow_id *, const struct nlattr *, bool log);
+ int ovs_nla_get_identifier(struct sw_flow_id *sfid, const struct nlattr *ufid,
+@@ -69,5 +69,6 @@ int ovs_nla_put_actions(const struct nlattr *attr,
+ 			int len, struct sk_buff *skb);
+ 
+ void ovs_nla_free_flow_actions(struct sw_flow_actions *);
++void ovs_nla_free_flow_actions_rcu(struct sw_flow_actions *);
+ 
+ #endif /* flow_netlink.h */
+diff --git a/net/openvswitch/flow_table.c b/net/openvswitch/flow_table.c
+index 4613df8..b70d845 100644
+--- a/net/openvswitch/flow_table.c
++++ b/net/openvswitch/flow_table.c
+@@ -18,6 +18,7 @@
+ 
+ #include "flow.h"
+ #include "datapath.h"
++#include "flow_netlink.h"
+ #include <linux/uaccess.h>
+ #include <linux/netdevice.h>
+ #include <linux/etherdevice.h>
+@@ -143,7 +144,8 @@ static void flow_free(struct sw_flow *flow)
+ 
+ 	if (ovs_identifier_is_key(&flow->id))
+ 		kfree(flow->id.unmasked_key);
+-	kfree((struct sw_flow_actions __force *)flow->sf_acts);
++	if (flow->sf_acts)
++		ovs_nla_free_flow_actions((struct sw_flow_actions __force *)flow->sf_acts);
+ 	for_each_node(node)
+ 		if (flow->stats[node])
+ 			kmem_cache_free(flow_stats_cache,
+diff --git a/net/openvswitch/vport-geneve.c b/net/openvswitch/vport-geneve.c
+index bf02fd5..88e2091 100644
+--- a/net/openvswitch/vport-geneve.c
++++ b/net/openvswitch/vport-geneve.c
+@@ -82,7 +82,7 @@ static void geneve_rcv(struct geneve_sock *gs, struct sk_buff *skb)
+ 	struct vport *vport = gs->rcv_data;
+ 	struct genevehdr *geneveh = geneve_hdr(skb);
+ 	int opts_len;
+-	struct ovs_tunnel_info tun_info;
++	struct ip_tunnel_info tun_info;
+ 	__be64 key;
+ 	__be16 flags;
+ 
+@@ -95,10 +95,9 @@ static void geneve_rcv(struct geneve_sock *gs, struct sk_buff *skb)
+ 
+ 	key = vni_to_tunnel_id(geneveh->vni);
+ 
+-	ovs_flow_tun_info_init(&tun_info, ip_hdr(skb),
+-			       udp_hdr(skb)->source, udp_hdr(skb)->dest,
+-			       key, flags,
+-			       geneveh->options, opts_len);
++	ip_tunnel_info_init(&tun_info, ip_hdr(skb),
++			    udp_hdr(skb)->source, udp_hdr(skb)->dest,
++			    key, flags, geneveh->options, opts_len);
+ 
+ 	ovs_vport_receive(vport, skb, &tun_info);
+ }
+@@ -170,8 +169,8 @@ error:
+ 
+ static int geneve_tnl_send(struct vport *vport, struct sk_buff *skb)
+ {
+-	const struct ovs_key_ipv4_tunnel *tun_key;
+-	struct ovs_tunnel_info *tun_info;
++	const struct ip_tunnel_key *tun_key;
++	struct ip_tunnel_info *tun_info;
+ 	struct net *net = ovs_dp_get_net(vport->dp);
+ 	struct geneve_port *geneve_port = geneve_vport(vport);
+ 	__be16 dport = inet_sk(geneve_port->gs->sock->sk)->inet_sport;
+@@ -188,7 +187,7 @@ static int geneve_tnl_send(struct vport *vport, struct sk_buff *skb)
+ 		goto error;
+ 	}
+ 
+-	tun_key = &tun_info->tunnel;
++	tun_key = &tun_info->key;
+ 	rt = ovs_tunnel_route_lookup(net, tun_key, skb->mark, &fl, IPPROTO_UDP);
+ 	if (IS_ERR(rt)) {
+ 		err = PTR_ERR(rt);
+@@ -230,7 +229,7 @@ static const char *geneve_get_name(const struct vport *vport)
+ }
+ 
+ static int geneve_get_egress_tun_info(struct vport *vport, struct sk_buff *skb,
+-				      struct ovs_tunnel_info *egress_tun_info)
++				      struct ip_tunnel_info *egress_tun_info)
+ {
+ 	struct geneve_port *geneve_port = geneve_vport(vport);
+ 	struct net *net = ovs_dp_get_net(vport->dp);
+diff --git a/net/openvswitch/vport-gre.c b/net/openvswitch/vport-gre.c
+index f17ac96..b87656c 100644
+--- a/net/openvswitch/vport-gre.c
++++ b/net/openvswitch/vport-gre.c
+@@ -67,9 +67,9 @@ static struct sk_buff *__build_header(struct sk_buff *skb,
+ 				      int tunnel_hlen)
+ {
+ 	struct tnl_ptk_info tpi;
+-	const struct ovs_key_ipv4_tunnel *tun_key;
++	const struct ip_tunnel_key *tun_key;
+ 
+-	tun_key = &OVS_CB(skb)->egress_tun_info->tunnel;
++	tun_key = &OVS_CB(skb)->egress_tun_info->key;
+ 
+ 	skb = gre_handle_offloads(skb, !!(tun_key->tun_flags & TUNNEL_CSUM));
+ 	if (IS_ERR(skb))
+@@ -97,7 +97,7 @@ static __be64 key_to_tunnel_id(__be32 key, __be32 seq)
+ static int gre_rcv(struct sk_buff *skb,
+ 		   const struct tnl_ptk_info *tpi)
+ {
+-	struct ovs_tunnel_info tun_info;
++	struct ip_tunnel_info tun_info;
+ 	struct ovs_net *ovs_net;
+ 	struct vport *vport;
+ 	__be64 key;
+@@ -108,8 +108,8 @@ static int gre_rcv(struct sk_buff *skb,
+ 		return PACKET_REJECT;
+ 
+ 	key = key_to_tunnel_id(tpi->key, tpi->seq);
+-	ovs_flow_tun_info_init(&tun_info, ip_hdr(skb), 0, 0, key,
+-			       filter_tnl_flags(tpi->flags), NULL, 0);
++	ip_tunnel_info_init(&tun_info, ip_hdr(skb), 0, 0, key,
++			    filter_tnl_flags(tpi->flags), NULL, 0);
+ 
+ 	ovs_vport_receive(vport, skb, &tun_info);
+ 	return PACKET_RCVD;
+@@ -134,7 +134,7 @@ static int gre_err(struct sk_buff *skb, u32 info,
+ static int gre_tnl_send(struct vport *vport, struct sk_buff *skb)
+ {
+ 	struct net *net = ovs_dp_get_net(vport->dp);
+-	const struct ovs_key_ipv4_tunnel *tun_key;
++	const struct ip_tunnel_key *tun_key;
+ 	struct flowi4 fl;
+ 	struct rtable *rt;
+ 	int min_headroom;
+@@ -147,7 +147,7 @@ static int gre_tnl_send(struct vport *vport, struct sk_buff *skb)
+ 		goto err_free_skb;
+ 	}
+ 
+-	tun_key = &OVS_CB(skb)->egress_tun_info->tunnel;
++	tun_key = &OVS_CB(skb)->egress_tun_info->key;
+ 	rt = ovs_tunnel_route_lookup(net, tun_key, skb->mark, &fl, IPPROTO_GRE);
+ 	if (IS_ERR(rt)) {
+ 		err = PTR_ERR(rt);
+@@ -277,7 +277,7 @@ static void gre_tnl_destroy(struct vport *vport)
+ }
+ 
+ static int gre_get_egress_tun_info(struct vport *vport, struct sk_buff *skb,
+-				   struct ovs_tunnel_info *egress_tun_info)
++				   struct ip_tunnel_info *egress_tun_info)
+ {
+ 	return ovs_tunnel_get_egress_info(egress_tun_info,
+ 					  ovs_dp_get_net(vport->dp),
+diff --git a/net/openvswitch/vport-internal_dev.c b/net/openvswitch/vport-internal_dev.c
+index 6a55f71..c058bbf 100644
+--- a/net/openvswitch/vport-internal_dev.c
++++ b/net/openvswitch/vport-internal_dev.c
+@@ -156,49 +156,44 @@ static void do_setup(struct net_device *netdev)
+ static struct vport *internal_dev_create(const struct vport_parms *parms)
+ {
+ 	struct vport *vport;
+-	struct netdev_vport *netdev_vport;
+ 	struct internal_dev *internal_dev;
+ 	int err;
+ 
+-	vport = ovs_vport_alloc(sizeof(struct netdev_vport),
+-				&ovs_internal_vport_ops, parms);
++	vport = ovs_vport_alloc(0, &ovs_internal_vport_ops, parms);
+ 	if (IS_ERR(vport)) {
+ 		err = PTR_ERR(vport);
+ 		goto error;
+ 	}
+ 
+-	netdev_vport = netdev_vport_priv(vport);
+-
+-	netdev_vport->dev = alloc_netdev(sizeof(struct internal_dev),
+-					 parms->name, NET_NAME_UNKNOWN,
+-					 do_setup);
+-	if (!netdev_vport->dev) {
++	vport->dev = alloc_netdev(sizeof(struct internal_dev),
++				  parms->name, NET_NAME_UNKNOWN, do_setup);
++	if (!vport->dev) {
+ 		err = -ENOMEM;
+ 		goto error_free_vport;
+ 	}
+ 
+-	dev_net_set(netdev_vport->dev, ovs_dp_get_net(vport->dp));
+-	internal_dev = internal_dev_priv(netdev_vport->dev);
++	dev_net_set(vport->dev, ovs_dp_get_net(vport->dp));
++	internal_dev = internal_dev_priv(vport->dev);
+ 	internal_dev->vport = vport;
+ 
+ 	/* Restrict bridge port to current netns. */
+ 	if (vport->port_no == OVSP_LOCAL)
+-		netdev_vport->dev->features |= NETIF_F_NETNS_LOCAL;
++		vport->dev->features |= NETIF_F_NETNS_LOCAL;
+ 
+ 	rtnl_lock();
+-	err = register_netdevice(netdev_vport->dev);
++	err = register_netdevice(vport->dev);
+ 	if (err)
+ 		goto error_free_netdev;
+ 
+-	dev_set_promiscuity(netdev_vport->dev, 1);
++	dev_set_promiscuity(vport->dev, 1);
+ 	rtnl_unlock();
+-	netif_start_queue(netdev_vport->dev);
++	netif_start_queue(vport->dev);
+ 
+ 	return vport;
+ 
+ error_free_netdev:
+ 	rtnl_unlock();
+-	free_netdev(netdev_vport->dev);
++	free_netdev(vport->dev);
+ error_free_vport:
+ 	ovs_vport_free(vport);
+ error:
+@@ -207,21 +202,19 @@ error:
+ 
+ static void internal_dev_destroy(struct vport *vport)
+ {
+-	struct netdev_vport *netdev_vport = netdev_vport_priv(vport);
+-
+-	netif_stop_queue(netdev_vport->dev);
++	netif_stop_queue(vport->dev);
+ 	rtnl_lock();
+-	dev_set_promiscuity(netdev_vport->dev, -1);
++	dev_set_promiscuity(vport->dev, -1);
+ 
+ 	/* unregister_netdevice() waits for an RCU grace period. */
+-	unregister_netdevice(netdev_vport->dev);
++	unregister_netdevice(vport->dev);
+ 
+ 	rtnl_unlock();
+ }
+ 
+ static int internal_dev_recv(struct vport *vport, struct sk_buff *skb)
+ {
+-	struct net_device *netdev = netdev_vport_priv(vport)->dev;
++	struct net_device *netdev = vport->dev;
+ 	int len;
+ 
+ 	if (unlikely(!(netdev->flags & IFF_UP))) {
+@@ -249,7 +242,6 @@ static struct vport_ops ovs_internal_vport_ops = {
+ 	.type		= OVS_VPORT_TYPE_INTERNAL,
+ 	.create		= internal_dev_create,
+ 	.destroy	= internal_dev_destroy,
+-	.get_name	= ovs_netdev_get_name,
+ 	.send		= internal_dev_recv,
+ };
+ 
+diff --git a/net/openvswitch/vport-netdev.c b/net/openvswitch/vport-netdev.c
+index 33e6d6e..68d0582 100644
+--- a/net/openvswitch/vport-netdev.c
++++ b/net/openvswitch/vport-netdev.c
+@@ -27,9 +27,13 @@
+ #include <linux/skbuff.h>
+ #include <linux/openvswitch.h>
+ 
+-#include <net/llc.h>
++#include <net/udp.h>
++#include <net/ip_tunnels.h>
++#include <net/rtnetlink.h>
++#include <net/vxlan.h>
+ 
+ #include "datapath.h"
++#include "vport.h"
+ #include "vport-internal_dev.h"
+ #include "vport-netdev.h"
+ 
+@@ -83,104 +87,93 @@ static struct net_device *get_dpdev(const struct datapath *dp)
+ 
+ 	local = ovs_vport_ovsl(dp, OVSP_LOCAL);
+ 	BUG_ON(!local);
+-	return netdev_vport_priv(local)->dev;
++	return local->dev;
+ }
+ 
+-static struct vport *netdev_create(const struct vport_parms *parms)
++static struct vport *netdev_link(struct vport *vport, const char *name)
+ {
+-	struct vport *vport;
+-	struct netdev_vport *netdev_vport;
+ 	int err;
+ 
+-	vport = ovs_vport_alloc(sizeof(struct netdev_vport),
+-				&ovs_netdev_vport_ops, parms);
+-	if (IS_ERR(vport)) {
+-		err = PTR_ERR(vport);
+-		goto error;
+-	}
+-
+-	netdev_vport = netdev_vport_priv(vport);
+-
+-	netdev_vport->dev = dev_get_by_name(ovs_dp_get_net(vport->dp), parms->name);
+-	if (!netdev_vport->dev) {
++	vport->dev = dev_get_by_name(ovs_dp_get_net(vport->dp), name);
++	if (!vport->dev) {
+ 		err = -ENODEV;
+ 		goto error_free_vport;
+ 	}
+ 
+-	if (netdev_vport->dev->flags & IFF_LOOPBACK ||
+-	    netdev_vport->dev->type != ARPHRD_ETHER ||
+-	    ovs_is_internal_dev(netdev_vport->dev)) {
++	if (vport->dev->flags & IFF_LOOPBACK ||
++	    vport->dev->type != ARPHRD_ETHER ||
++	    ovs_is_internal_dev(vport->dev)) {
+ 		err = -EINVAL;
+ 		goto error_put;
+ 	}
+ 
+ 	rtnl_lock();
+-	err = netdev_master_upper_dev_link(netdev_vport->dev,
++	err = netdev_master_upper_dev_link(vport->dev,
+ 					   get_dpdev(vport->dp));
+ 	if (err)
+ 		goto error_unlock;
+ 
+-	err = netdev_rx_handler_register(netdev_vport->dev, netdev_frame_hook,
++	err = netdev_rx_handler_register(vport->dev, netdev_frame_hook,
+ 					 vport);
+ 	if (err)
+ 		goto error_master_upper_dev_unlink;
+ 
+-	dev_disable_lro(netdev_vport->dev);
+-	dev_set_promiscuity(netdev_vport->dev, 1);
+-	netdev_vport->dev->priv_flags |= IFF_OVS_DATAPATH;
++	dev_disable_lro(vport->dev);
++	dev_set_promiscuity(vport->dev, 1);
++	vport->dev->priv_flags |= IFF_OVS_DATAPATH;
+ 	rtnl_unlock();
+ 
+ 	return vport;
+ 
+ error_master_upper_dev_unlink:
+-	netdev_upper_dev_unlink(netdev_vport->dev, get_dpdev(vport->dp));
++	netdev_upper_dev_unlink(vport->dev, get_dpdev(vport->dp));
+ error_unlock:
+ 	rtnl_unlock();
+ error_put:
+-	dev_put(netdev_vport->dev);
++	dev_put(vport->dev);
+ error_free_vport:
+ 	ovs_vport_free(vport);
+-error:
+ 	return ERR_PTR(err);
+ }
+ 
++static struct vport *netdev_create(const struct vport_parms *parms)
++{
++	struct vport *vport;
++
++	vport = ovs_vport_alloc(0, &ovs_netdev_vport_ops, parms);
++	if (IS_ERR(vport))
++		return vport;
++
++	return netdev_link(vport, parms->name);
++}
++
+ static void free_port_rcu(struct rcu_head *rcu)
+ {
+-	struct netdev_vport *netdev_vport = container_of(rcu,
+-					struct netdev_vport, rcu);
++	struct vport *vport = container_of(rcu, struct vport, rcu);
+ 
+-	dev_put(netdev_vport->dev);
+-	ovs_vport_free(vport_from_priv(netdev_vport));
++	if (vport->dev)
++		dev_put(vport->dev);
++	ovs_vport_free(vport);
+ }
+ 
+ void ovs_netdev_detach_dev(struct vport *vport)
+ {
+-	struct netdev_vport *netdev_vport = netdev_vport_priv(vport);
+-
+ 	ASSERT_RTNL();
+-	netdev_vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;
+-	netdev_rx_handler_unregister(netdev_vport->dev);
+-	netdev_upper_dev_unlink(netdev_vport->dev,
+-				netdev_master_upper_dev_get(netdev_vport->dev));
+-	dev_set_promiscuity(netdev_vport->dev, -1);
++	vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;
++	netdev_rx_handler_unregister(vport->dev);
++	netdev_upper_dev_unlink(vport->dev,
++				netdev_master_upper_dev_get(vport->dev));
++	dev_set_promiscuity(vport->dev, -1);
+ }
+ 
+ static void netdev_destroy(struct vport *vport)
+ {
+-	struct netdev_vport *netdev_vport = netdev_vport_priv(vport);
+-
+ 	rtnl_lock();
+-	if (netdev_vport->dev->priv_flags & IFF_OVS_DATAPATH)
++	if (vport->dev->priv_flags & IFF_OVS_DATAPATH)
+ 		ovs_netdev_detach_dev(vport);
+ 	rtnl_unlock();
+ 
+-	call_rcu(&netdev_vport->rcu, free_port_rcu);
+-}
+-
+-const char *ovs_netdev_get_name(const struct vport *vport)
+-{
+-	const struct netdev_vport *netdev_vport = netdev_vport_priv(vport);
+-	return netdev_vport->dev->name;
++	call_rcu(&vport->rcu, free_port_rcu);
+ }
+ 
+ static unsigned int packet_length(const struct sk_buff *skb)
+@@ -195,18 +188,17 @@ static unsigned int packet_length(const struct sk_buff *skb)
+ 
+ static int netdev_send(struct vport *vport, struct sk_buff *skb)
+ {
+-	struct netdev_vport *netdev_vport = netdev_vport_priv(vport);
+-	int mtu = netdev_vport->dev->mtu;
++	int mtu = vport->dev->mtu;
+ 	int len;
+ 
+ 	if (unlikely(packet_length(skb) > mtu && !skb_is_gso(skb))) {
+ 		net_warn_ratelimited("%s: dropped over-mtu packet: %d > %d\n",
+-				     netdev_vport->dev->name,
++				     vport->dev->name,
+ 				     packet_length(skb), mtu);
+ 		goto drop;
+ 	}
+ 
+-	skb->dev = netdev_vport->dev;
++	skb->dev = vport->dev;
+ 	len = skb->len;
+ 	dev_queue_xmit(skb);
+ 
+@@ -231,16 +223,205 @@ static struct vport_ops ovs_netdev_vport_ops = {
+ 	.type		= OVS_VPORT_TYPE_NETDEV,
+ 	.create		= netdev_create,
+ 	.destroy	= netdev_destroy,
+-	.get_name	= ovs_netdev_get_name,
+ 	.send		= netdev_send,
+ };
+ 
++/* Compat code for old userspace. */
++#if IS_ENABLED(CONFIG_VXLAN)
++static struct vport_ops ovs_vxlan_netdev_vport_ops;
++
++static int vxlan_get_options(const struct vport *vport, struct sk_buff *skb)
++{
++	struct vxlan_dev *vxlan = netdev_priv(vport->dev);
++	__be16 dst_port = vxlan->cfg.dst_port;
++
++	if (nla_put_u16(skb, OVS_TUNNEL_ATTR_DST_PORT, ntohs(dst_port)))
++		return -EMSGSIZE;
++
++	if (vxlan->flags & VXLAN_F_GBP) {
++		struct nlattr *exts;
++
++		exts = nla_nest_start(skb, OVS_TUNNEL_ATTR_EXTENSION);
++		if (!exts)
++			return -EMSGSIZE;
++
++		if (vxlan->flags & VXLAN_F_GBP &&
++		    nla_put_flag(skb, OVS_VXLAN_EXT_GBP))
++			return -EMSGSIZE;
++
++		nla_nest_end(skb, exts);
++	}
++
++	return 0;
++}
++
++static const struct nla_policy exts_policy[OVS_VXLAN_EXT_MAX + 1] = {
++	[OVS_VXLAN_EXT_GBP]	= { .type = NLA_FLAG, },
++};
++
++static int vxlan_configure_exts(struct vport *vport, struct nlattr *attr,
++				struct vxlan_config *conf)
++{
++	struct nlattr *exts[OVS_VXLAN_EXT_MAX + 1];
++	int err;
++
++	if (nla_len(attr) < sizeof(struct nlattr))
++		return -EINVAL;
++
++	err = nla_parse_nested(exts, OVS_VXLAN_EXT_MAX, attr, exts_policy);
++	if (err < 0)
++		return err;
++
++	if (exts[OVS_VXLAN_EXT_GBP])
++		conf->flags |= VXLAN_F_GBP;
++
++	return 0;
++}
++
++static struct vport *vxlan_tnl_create(const struct vport_parms *parms)
++{
++	struct net *net = ovs_dp_get_net(parms->dp);
++	struct nlattr *options = parms->options;
++	struct net_device *dev;
++	struct vport *vport;
++	struct nlattr *a;
++	int err;
++	struct vxlan_config conf = {
++		.no_share = true,
++		.flags = VXLAN_F_FLOW_BASED | VXLAN_F_COLLECT_METADATA,
++	};
++
++	if (!options) {
++		err = -EINVAL;
++		goto error;
++	}
++
++	a = nla_find_nested(options, OVS_TUNNEL_ATTR_DST_PORT);
++	if (a && nla_len(a) == sizeof(u16)) {
++		conf.dst_port = htons(nla_get_u16(a));
++	} else {
++		/* Require destination port from userspace. */
++		err = -EINVAL;
++		goto error;
++	}
++
++	vport = ovs_vport_alloc(0, &ovs_vxlan_netdev_vport_ops, parms);
++	if (IS_ERR(vport))
++		return vport;
++
++	a = nla_find_nested(options, OVS_TUNNEL_ATTR_EXTENSION);
++	if (a) {
++		err = vxlan_configure_exts(vport, a, &conf);
++		if (err) {
++			ovs_vport_free(vport);
++			goto error;
++		}
++	}
++
++	rtnl_lock();
++	dev = vxlan_dev_create(net, parms->name, NET_NAME_USER, &conf);
++	if (IS_ERR(dev)) {
++		rtnl_unlock();
++		ovs_vport_free(vport);
++		return ERR_CAST(dev);
++	}
++
++	dev_change_flags(dev, dev->flags | IFF_UP);
++	rtnl_unlock();
++	return vport;
++error:
++	return ERR_PTR(err);
++}
++
++static struct vport *vxlan_create(const struct vport_parms *parms)
++{
++	struct vport *vport;
++
++	vport = vxlan_tnl_create(parms);
++	if (IS_ERR(vport))
++		return vport;
++
++	return netdev_link(vport, parms->name);
++}
++
++static void vxlan_destroy(struct vport *vport)
++{
++	rtnl_lock();
++	if (vport->dev->priv_flags & IFF_OVS_DATAPATH)
++		ovs_netdev_detach_dev(vport);
++
++	/* Early release so we can unregister the device */
++	dev_put(vport->dev);
++	rtnl_delete_link(vport->dev);
++	vport->dev = NULL;
++	rtnl_unlock();
++
++	call_rcu(&vport->rcu, free_port_rcu);
++}
++
++static int vxlan_get_egress_tun_info(struct vport *vport, struct sk_buff *skb,
++				     struct ip_tunnel_info *egress_tun_info)
++{
++	struct vxlan_dev *vxlan = netdev_priv(vport->dev);
++	struct net *net = ovs_dp_get_net(vport->dp);
++	__be16 dst_port = vxlan_dev_dst_port(vxlan);
++	__be16 src_port;
++	int port_min;
++	int port_max;
++
++	inet_get_local_port_range(net, &port_min, &port_max);
++	src_port = udp_flow_src_port(net, skb, 0, 0, true);
++
++	return ovs_tunnel_get_egress_info(egress_tun_info, net,
++					  OVS_CB(skb)->egress_tun_info,
++					  IPPROTO_UDP, skb->mark,
++					  src_port, dst_port);
++}
++
++static struct vport_ops ovs_vxlan_netdev_vport_ops = {
++	.type		= OVS_VPORT_TYPE_VXLAN,
++	.create		= vxlan_create,
++	.destroy	= vxlan_destroy,
++	.get_options	= vxlan_get_options,
++	.send		= netdev_send,
++	.get_egress_tun_info	= vxlan_get_egress_tun_info,
++};
++
++static int vxlan_compat_init(void)
++{
++	return ovs_vport_ops_register(&ovs_vxlan_netdev_vport_ops);
++}
++
++static void vxlan_compat_exit(void)
++{
++	ovs_vport_ops_unregister(&ovs_vxlan_netdev_vport_ops);
++}
++#else
++static int vxlan_compat_init(void)
++{
++	return 0;
++}
++
++static void vxlan_compat_exit(void)
++{
++}
++#endif
++
+ int __init ovs_netdev_init(void)
+ {
+-	return ovs_vport_ops_register(&ovs_netdev_vport_ops);
++	int err;
++
++	err = ovs_vport_ops_register(&ovs_netdev_vport_ops);
++	if (err)
++		return err;
++	err = vxlan_compat_init();
++	if (err)
++		vxlan_compat_exit();
++	return err;
+ }
+ 
+ void ovs_netdev_exit(void)
+ {
+ 	ovs_vport_ops_unregister(&ovs_netdev_vport_ops);
++	vxlan_compat_exit();
+ }
+diff --git a/net/openvswitch/vport-netdev.h b/net/openvswitch/vport-netdev.h
+index 6f7038e..684fb88 100644
+--- a/net/openvswitch/vport-netdev.h
++++ b/net/openvswitch/vport-netdev.h
+@@ -26,19 +26,6 @@
+ 
+ struct vport *ovs_netdev_get_vport(struct net_device *dev);
+ 
+-struct netdev_vport {
+-	struct rcu_head rcu;
+-
+-	struct net_device *dev;
+-};
+-
+-static inline struct netdev_vport *
+-netdev_vport_priv(const struct vport *vport)
+-{
+-	return vport_priv(vport);
+-}
+-
+-const char *ovs_netdev_get_name(const struct vport *);
+ void ovs_netdev_detach_dev(struct vport *);
+ 
+ int __init ovs_netdev_init(void);
+diff --git a/net/openvswitch/vport-vxlan.c b/net/openvswitch/vport-vxlan.c
+deleted file mode 100644
+index 6d39766..0000000
+--- a/net/openvswitch/vport-vxlan.c
++++ /dev/null
+@@ -1,322 +0,0 @@
+-/*
+- * Copyright (c) 2014 Nicira, Inc.
+- * Copyright (c) 2013 Cisco Systems, Inc.
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of version 2 of the GNU General Public
+- * License as published by the Free Software Foundation.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+- * General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+- * 02110-1301, USA
+- */
+-
+-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+-
+-#include <linux/in.h>
+-#include <linux/ip.h>
+-#include <linux/net.h>
+-#include <linux/rculist.h>
+-#include <linux/udp.h>
+-#include <linux/module.h>
+-
+-#include <net/icmp.h>
+-#include <net/ip.h>
+-#include <net/udp.h>
+-#include <net/ip_tunnels.h>
+-#include <net/rtnetlink.h>
+-#include <net/route.h>
+-#include <net/dsfield.h>
+-#include <net/inet_ecn.h>
+-#include <net/net_namespace.h>
+-#include <net/netns/generic.h>
+-#include <net/vxlan.h>
+-
+-#include "datapath.h"
+-#include "vport.h"
+-#include "vport-vxlan.h"
+-
+-/**
+- * struct vxlan_port - Keeps track of open UDP ports
+- * @vs: vxlan_sock created for the port.
+- * @name: vport name.
+- */
+-struct vxlan_port {
+-	struct vxlan_sock *vs;
+-	char name[IFNAMSIZ];
+-	u32 exts; /* VXLAN_F_* in <net/vxlan.h> */
+-};
+-
+-static struct vport_ops ovs_vxlan_vport_ops;
+-
+-static inline struct vxlan_port *vxlan_vport(const struct vport *vport)
+-{
+-	return vport_priv(vport);
+-}
+-
+-/* Called with rcu_read_lock and BH disabled. */
+-static void vxlan_rcv(struct vxlan_sock *vs, struct sk_buff *skb,
+-		      struct vxlan_metadata *md)
+-{
+-	struct ovs_tunnel_info tun_info;
+-	struct vxlan_port *vxlan_port;
+-	struct vport *vport = vs->data;
+-	struct iphdr *iph;
+-	struct ovs_vxlan_opts opts = {
+-		.gbp = md->gbp,
+-	};
+-	__be64 key;
+-	__be16 flags;
+-
+-	flags = TUNNEL_KEY | (udp_hdr(skb)->check != 0 ? TUNNEL_CSUM : 0);
+-	vxlan_port = vxlan_vport(vport);
+-	if (vxlan_port->exts & VXLAN_F_GBP && md->gbp)
+-		flags |= TUNNEL_VXLAN_OPT;
+-
+-	/* Save outer tunnel values */
+-	iph = ip_hdr(skb);
+-	key = cpu_to_be64(ntohl(md->vni) >> 8);
+-	ovs_flow_tun_info_init(&tun_info, iph,
+-			       udp_hdr(skb)->source, udp_hdr(skb)->dest,
+-			       key, flags, &opts, sizeof(opts));
+-
+-	ovs_vport_receive(vport, skb, &tun_info);
+-}
+-
+-static int vxlan_get_options(const struct vport *vport, struct sk_buff *skb)
+-{
+-	struct vxlan_port *vxlan_port = vxlan_vport(vport);
+-	__be16 dst_port = inet_sk(vxlan_port->vs->sock->sk)->inet_sport;
+-
+-	if (nla_put_u16(skb, OVS_TUNNEL_ATTR_DST_PORT, ntohs(dst_port)))
+-		return -EMSGSIZE;
+-
+-	if (vxlan_port->exts) {
+-		struct nlattr *exts;
+-
+-		exts = nla_nest_start(skb, OVS_TUNNEL_ATTR_EXTENSION);
+-		if (!exts)
+-			return -EMSGSIZE;
+-
+-		if (vxlan_port->exts & VXLAN_F_GBP &&
+-		    nla_put_flag(skb, OVS_VXLAN_EXT_GBP))
+-			return -EMSGSIZE;
+-
+-		nla_nest_end(skb, exts);
+-	}
+-
+-	return 0;
+-}
+-
+-static void vxlan_tnl_destroy(struct vport *vport)
+-{
+-	struct vxlan_port *vxlan_port = vxlan_vport(vport);
+-
+-	vxlan_sock_release(vxlan_port->vs);
+-
+-	ovs_vport_deferred_free(vport);
+-}
+-
+-static const struct nla_policy exts_policy[OVS_VXLAN_EXT_MAX+1] = {
+-	[OVS_VXLAN_EXT_GBP]	= { .type = NLA_FLAG, },
+-};
+-
+-static int vxlan_configure_exts(struct vport *vport, struct nlattr *attr)
+-{
+-	struct nlattr *exts[OVS_VXLAN_EXT_MAX+1];
+-	struct vxlan_port *vxlan_port;
+-	int err;
+-
+-	if (nla_len(attr) < sizeof(struct nlattr))
+-		return -EINVAL;
+-
+-	err = nla_parse_nested(exts, OVS_VXLAN_EXT_MAX, attr, exts_policy);
+-	if (err < 0)
+-		return err;
+-
+-	vxlan_port = vxlan_vport(vport);
+-
+-	if (exts[OVS_VXLAN_EXT_GBP])
+-		vxlan_port->exts |= VXLAN_F_GBP;
+-
+-	return 0;
+-}
+-
+-static struct vport *vxlan_tnl_create(const struct vport_parms *parms)
+-{
+-	struct net *net = ovs_dp_get_net(parms->dp);
+-	struct nlattr *options = parms->options;
+-	struct vxlan_port *vxlan_port;
+-	struct vxlan_sock *vs;
+-	struct vport *vport;
+-	struct nlattr *a;
+-	u16 dst_port;
+-	int err;
+-
+-	if (!options) {
+-		err = -EINVAL;
+-		goto error;
+-	}
+-	a = nla_find_nested(options, OVS_TUNNEL_ATTR_DST_PORT);
+-	if (a && nla_len(a) == sizeof(u16)) {
+-		dst_port = nla_get_u16(a);
+-	} else {
+-		/* Require destination port from userspace. */
+-		err = -EINVAL;
+-		goto error;
+-	}
+-
+-	vport = ovs_vport_alloc(sizeof(struct vxlan_port),
+-				&ovs_vxlan_vport_ops, parms);
+-	if (IS_ERR(vport))
+-		return vport;
+-
+-	vxlan_port = vxlan_vport(vport);
+-	strncpy(vxlan_port->name, parms->name, IFNAMSIZ);
+-
+-	a = nla_find_nested(options, OVS_TUNNEL_ATTR_EXTENSION);
+-	if (a) {
+-		err = vxlan_configure_exts(vport, a);
+-		if (err) {
+-			ovs_vport_free(vport);
+-			goto error;
+-		}
+-	}
+-
+-	vs = vxlan_sock_add(net, htons(dst_port), vxlan_rcv, vport, true,
+-			    vxlan_port->exts);
+-	if (IS_ERR(vs)) {
+-		ovs_vport_free(vport);
+-		return (void *)vs;
+-	}
+-	vxlan_port->vs = vs;
+-
+-	return vport;
+-
+-error:
+-	return ERR_PTR(err);
+-}
+-
+-static int vxlan_ext_gbp(struct sk_buff *skb)
+-{
+-	const struct ovs_tunnel_info *tun_info;
+-	const struct ovs_vxlan_opts *opts;
+-
+-	tun_info = OVS_CB(skb)->egress_tun_info;
+-	opts = tun_info->options;
+-
+-	if (tun_info->tunnel.tun_flags & TUNNEL_VXLAN_OPT &&
+-	    tun_info->options_len >= sizeof(*opts))
+-		return opts->gbp;
+-	else
+-		return 0;
+-}
+-
+-static int vxlan_tnl_send(struct vport *vport, struct sk_buff *skb)
+-{
+-	struct net *net = ovs_dp_get_net(vport->dp);
+-	struct vxlan_port *vxlan_port = vxlan_vport(vport);
+-	struct sock *sk = vxlan_port->vs->sock->sk;
+-	__be16 dst_port = inet_sk(sk)->inet_sport;
+-	const struct ovs_key_ipv4_tunnel *tun_key;
+-	struct vxlan_metadata md = {0};
+-	struct rtable *rt;
+-	struct flowi4 fl;
+-	__be16 src_port;
+-	__be16 df;
+-	int err;
+-	u32 vxflags;
+-
+-	if (unlikely(!OVS_CB(skb)->egress_tun_info)) {
+-		err = -EINVAL;
+-		goto error;
+-	}
+-
+-	tun_key = &OVS_CB(skb)->egress_tun_info->tunnel;
+-	rt = ovs_tunnel_route_lookup(net, tun_key, skb->mark, &fl, IPPROTO_UDP);
+-	if (IS_ERR(rt)) {
+-		err = PTR_ERR(rt);
+-		goto error;
+-	}
+-
+-	df = tun_key->tun_flags & TUNNEL_DONT_FRAGMENT ?
+-		htons(IP_DF) : 0;
+-
+-	skb->ignore_df = 1;
+-
+-	src_port = udp_flow_src_port(net, skb, 0, 0, true);
+-	md.vni = htonl(be64_to_cpu(tun_key->tun_id) << 8);
+-	md.gbp = vxlan_ext_gbp(skb);
+-	vxflags = vxlan_port->exts |
+-		      (tun_key->tun_flags & TUNNEL_CSUM ? VXLAN_F_UDP_CSUM : 0);
+-
+-	err = vxlan_xmit_skb(rt, sk, skb, fl.saddr, tun_key->ipv4_dst,
+-			     tun_key->ipv4_tos, tun_key->ipv4_ttl, df,
+-			     src_port, dst_port,
+-			     &md, false, vxflags);
+-	if (err < 0)
+-		ip_rt_put(rt);
+-	return err;
+-error:
+-	kfree_skb(skb);
+-	return err;
+-}
+-
+-static int vxlan_get_egress_tun_info(struct vport *vport, struct sk_buff *skb,
+-				     struct ovs_tunnel_info *egress_tun_info)
+-{
+-	struct net *net = ovs_dp_get_net(vport->dp);
+-	struct vxlan_port *vxlan_port = vxlan_vport(vport);
+-	__be16 dst_port = inet_sk(vxlan_port->vs->sock->sk)->inet_sport;
+-	__be16 src_port;
+-	int port_min;
+-	int port_max;
+-
+-	inet_get_local_port_range(net, &port_min, &port_max);
+-	src_port = udp_flow_src_port(net, skb, 0, 0, true);
+-
+-	return ovs_tunnel_get_egress_info(egress_tun_info, net,
+-					  OVS_CB(skb)->egress_tun_info,
+-					  IPPROTO_UDP, skb->mark,
+-					  src_port, dst_port);
+-}
+-
+-static const char *vxlan_get_name(const struct vport *vport)
+-{
+-	struct vxlan_port *vxlan_port = vxlan_vport(vport);
+-	return vxlan_port->name;
+-}
+-
+-static struct vport_ops ovs_vxlan_vport_ops = {
+-	.type		= OVS_VPORT_TYPE_VXLAN,
+-	.create		= vxlan_tnl_create,
+-	.destroy	= vxlan_tnl_destroy,
+-	.get_name	= vxlan_get_name,
+-	.get_options	= vxlan_get_options,
+-	.send		= vxlan_tnl_send,
+-	.get_egress_tun_info	= vxlan_get_egress_tun_info,
+-	.owner		= THIS_MODULE,
+-};
+-
+-static int __init ovs_vxlan_tnl_init(void)
+-{
+-	return ovs_vport_ops_register(&ovs_vxlan_vport_ops);
+-}
+-
+-static void __exit ovs_vxlan_tnl_exit(void)
+-{
+-	ovs_vport_ops_unregister(&ovs_vxlan_vport_ops);
+-}
+-
+-module_init(ovs_vxlan_tnl_init);
+-module_exit(ovs_vxlan_tnl_exit);
+-
+-MODULE_DESCRIPTION("OVS: VXLAN switching port");
+-MODULE_LICENSE("GPL");
+-MODULE_ALIAS("vport-type-4");
+diff --git a/net/openvswitch/vport-vxlan.h b/net/openvswitch/vport-vxlan.h
+deleted file mode 100644
+index 4b08233e..0000000
+--- a/net/openvswitch/vport-vxlan.h
++++ /dev/null
+@@ -1,11 +0,0 @@
+-#ifndef VPORT_VXLAN_H
+-#define VPORT_VXLAN_H 1
+-
+-#include <linux/kernel.h>
+-#include <linux/types.h>
+-
+-struct ovs_vxlan_opts {
+-	__u32 gbp;
+-};
+-
+-#endif
+diff --git a/net/openvswitch/vport.c b/net/openvswitch/vport.c
+index 067a3ff..d14f594 100644
+--- a/net/openvswitch/vport.c
++++ b/net/openvswitch/vport.c
+@@ -113,7 +113,7 @@ struct vport *ovs_vport_locate(const struct net *net, const char *name)
+ 	struct vport *vport;
+ 
+ 	hlist_for_each_entry_rcu(vport, bucket, hash_node)
+-		if (!strcmp(name, vport->ops->get_name(vport)) &&
++		if (!strcmp(name, ovs_vport_name(vport)) &&
+ 		    net_eq(ovs_dp_get_net(vport->dp), net))
+ 			return vport;
+ 
+@@ -226,7 +226,7 @@ struct vport *ovs_vport_add(const struct vport_parms *parms)
+ 		}
+ 
+ 		bucket = hash_bucket(ovs_dp_get_net(vport->dp),
+-				     vport->ops->get_name(vport));
++				     ovs_vport_name(vport));
+ 		hlist_add_head_rcu(&vport->hash_node, bucket);
+ 		return vport;
+ 	}
+@@ -469,7 +469,7 @@ u32 ovs_vport_find_upcall_portid(const struct vport *vport, struct sk_buff *skb)
+  * skb->data should point to the Ethernet header.
+  */
+ void ovs_vport_receive(struct vport *vport, struct sk_buff *skb,
+-		       const struct ovs_tunnel_info *tun_info)
++		       const struct ip_tunnel_info *tun_info)
+ {
+ 	struct pcpu_sw_netstats *stats;
+ 	struct sw_flow_key key;
+@@ -572,22 +572,22 @@ void ovs_vport_deferred_free(struct vport *vport)
+ }
+ EXPORT_SYMBOL_GPL(ovs_vport_deferred_free);
+ 
+-int ovs_tunnel_get_egress_info(struct ovs_tunnel_info *egress_tun_info,
++int ovs_tunnel_get_egress_info(struct ip_tunnel_info *egress_tun_info,
+ 			       struct net *net,
+-			       const struct ovs_tunnel_info *tun_info,
++			       const struct ip_tunnel_info *tun_info,
+ 			       u8 ipproto,
+ 			       u32 skb_mark,
+ 			       __be16 tp_src,
+ 			       __be16 tp_dst)
+ {
+-	const struct ovs_key_ipv4_tunnel *tun_key;
++	const struct ip_tunnel_key *tun_key;
+ 	struct rtable *rt;
+ 	struct flowi4 fl;
+ 
+ 	if (unlikely(!tun_info))
+ 		return -EINVAL;
+ 
+-	tun_key = &tun_info->tunnel;
++	tun_key = &tun_info->key;
+ 
+ 	/* Route lookup to get srouce IP address.
+ 	 * The process may need to be changed if the corresponding process
+@@ -602,22 +602,22 @@ int ovs_tunnel_get_egress_info(struct ovs_tunnel_info *egress_tun_info,
+ 	/* Generate egress_tun_info based on tun_info,
+ 	 * saddr, tp_src and tp_dst
+ 	 */
+-	__ovs_flow_tun_info_init(egress_tun_info,
+-				 fl.saddr, tun_key->ipv4_dst,
+-				 tun_key->ipv4_tos,
+-				 tun_key->ipv4_ttl,
+-				 tp_src, tp_dst,
+-				 tun_key->tun_id,
+-				 tun_key->tun_flags,
+-				 tun_info->options,
+-				 tun_info->options_len);
++	__ip_tunnel_info_init(egress_tun_info,
++			      fl.saddr, tun_key->ipv4_dst,
++			      tun_key->ipv4_tos,
++			      tun_key->ipv4_ttl,
++			      tp_src, tp_dst,
++			      tun_key->tun_id,
++			      tun_key->tun_flags,
++			      tun_info->options,
++			      tun_info->options_len);
+ 
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(ovs_tunnel_get_egress_info);
+ 
+ int ovs_vport_get_egress_tun_info(struct vport *vport, struct sk_buff *skb,
+-				  struct ovs_tunnel_info *info)
++				  struct ip_tunnel_info *info)
+ {
+ 	/* get_egress_tun_info() is only implemented on tunnel ports. */
+ 	if (unlikely(!vport->ops->get_egress_tun_info))
+diff --git a/net/openvswitch/vport.h b/net/openvswitch/vport.h
+index bc85331..1a689c2 100644
+--- a/net/openvswitch/vport.h
++++ b/net/openvswitch/vport.h
+@@ -27,6 +27,7 @@
+ #include <linux/skbuff.h>
+ #include <linux/spinlock.h>
+ #include <linux/u64_stats_sync.h>
++#include <net/route.h>
+ 
+ #include "datapath.h"
+ 
+@@ -58,15 +59,15 @@ u32 ovs_vport_find_upcall_portid(const struct vport *, struct sk_buff *);
+ 
+ int ovs_vport_send(struct vport *, struct sk_buff *);
+ 
+-int ovs_tunnel_get_egress_info(struct ovs_tunnel_info *egress_tun_info,
++int ovs_tunnel_get_egress_info(struct ip_tunnel_info *egress_tun_info,
+ 			       struct net *net,
+-			       const struct ovs_tunnel_info *tun_info,
++			       const struct ip_tunnel_info *tun_info,
+ 			       u8 ipproto,
+ 			       u32 skb_mark,
+ 			       __be16 tp_src,
+ 			       __be16 tp_dst);
+ int ovs_vport_get_egress_tun_info(struct vport *vport, struct sk_buff *skb,
+-				  struct ovs_tunnel_info *info);
++				  struct ip_tunnel_info *info);
+ 
+ /* The following definitions are for implementers of vport devices: */
+ 
+@@ -106,7 +107,7 @@ struct vport_portids {
+  * @detach_list: list used for detaching vport in net-exit call.
+  */
+ struct vport {
+-	struct rcu_head rcu;
++	struct net_device *dev;
+ 	struct datapath	*dp;
+ 	struct vport_portids __rcu *upcall_portids;
+ 	u16 port_no;
+@@ -119,6 +120,7 @@ struct vport {
+ 
+ 	struct vport_err_stats err_stats;
+ 	struct list_head detach_list;
++	struct rcu_head rcu;
+ };
+ 
+ /**
+@@ -176,7 +178,7 @@ struct vport_ops {
+ 
+ 	int (*send)(struct vport *, struct sk_buff *);
+ 	int (*get_egress_tun_info)(struct vport *, struct sk_buff *,
+-				   struct ovs_tunnel_info *);
++				   struct ip_tunnel_info *);
+ 
+ 	struct module *owner;
+ 	struct list_head list;
+@@ -226,7 +228,7 @@ static inline struct vport *vport_from_priv(void *priv)
+ }
+ 
+ void ovs_vport_receive(struct vport *, struct sk_buff *,
+-		       const struct ovs_tunnel_info *);
++		       const struct ip_tunnel_info *);
+ 
+ static inline void ovs_skb_postpush_rcsum(struct sk_buff *skb,
+ 				      const void *start, unsigned int len)
+@@ -235,11 +237,16 @@ static inline void ovs_skb_postpush_rcsum(struct sk_buff *skb,
+ 		skb->csum = csum_add(skb->csum, csum_partial(start, len, 0));
+ }
+ 
++static inline const char *ovs_vport_name(struct vport *vport)
++{
++	return vport->dev ? vport->dev->name : vport->ops->get_name(vport);
++}
++
+ int ovs_vport_ops_register(struct vport_ops *ops);
+ void ovs_vport_ops_unregister(struct vport_ops *ops);
+ 
+ static inline struct rtable *ovs_tunnel_route_lookup(struct net *net,
+-						     const struct ovs_key_ipv4_tunnel *key,
++						     const struct ip_tunnel_key *key,
+ 						     u32 mark,
+ 						     struct flowi4 *fl,
+ 						     u8 protocol)
