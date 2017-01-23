@@ -5,25 +5,13 @@ dir_for_cp="$HOME/test_turlupov/for_cp"
 dir_for_mv="$HOME/test_turlupov/for_mv"
 
 maxdir=5
-maxfiles=100
+maxfiles=10
 
 if [ -d $home_dir ] ; then
 	rm -rf "$home_dir"
 fi
 mkdir "$home_dir"
 
-#TODO check
-
-## step 1 ##
-#echo "step 1.."
-#Step1 "$home_dir" 5
-#if [ "x$?" = "x1" ] ; then
-#	echo "step 1 FAILED"
-#	exit 1
-#fi
-#echo "step 1 PASSED"
-
-#return 0
 
 ######## step 1 ########
 echo "Step 1:"
@@ -40,25 +28,26 @@ echo "\tPASSED"
 ########################
 
 ######## step 2 ########
-echo "Step 2:"
-for i in `ls $home_dir` ; do
-	for j in `seq 1 $maxfiles` ; do
-		touch $home_dir/$i/$j
-		if [ "x$?" = "x1" ] ; then
-			echo "\tFAILED touch"
-			exit 1
-		fi
-		dd if=/dev/urandom of=$home_dir/$i/$j bs=100 count=1 1>/dev/null 2>/dev/null
-		if [ "x$?" = "x1" ] ; then
-			echo "\tFAILED dd"
-			exit 1
-		fi
-	done
-done
-echo "\tPASSED"
+
+#echo "Step 2:"
+#for i in `ls $home_dir` ; do
+#	for j in `seq 1 $maxfiles` ; do
+#		touch $home_dir/$i/$j
+#		if [ "x$?" = "x1" ] ; then
+#			echo "\tFAILED touch"
+#			exit 1
+#		fi
+#		dd if=/dev/urandom of=$home_dir/$i/$j bs=100 count=1 1>/dev/null 2>/dev/null
+#		if [ "x$?" = "x1" ] ; then
+#			echo "\tFAILED dd"
+#			exit 1
+#		fi
+#	done
+#done
+#echo "\tPASSED"
 
 ########################
-return 0
+#return 0
 
 
 
@@ -68,7 +57,7 @@ echo "Step 2-4:"
 for i in `ls $home_dir` ; do
 
 	for j in `seq 1 $maxfiles` ; do
-		filename="$home_dir$i/$j""_$i""k_"
+		filename="$home_dir/$i/$j""_$i""k_"
 		d=`date +%T_%d-%m-%Y` #hh:mm:ss_d-m-y
 		filename="$filename""$d"
 		dd if=/dev/urandom of=$filename bs=1k count=$i	1>/dev/null 2>/dev/null
@@ -90,7 +79,7 @@ if [ "x$?" = "x1" ] ; then
 fi
 
 for i in `seq 1 $maxdir` ; do
-	cp -r "$home_dir$i" "$dir_for_cp"
+	cp -r "$home_dir/$i" "$dir_for_cp"
 	if [ "x$?" = "x1" ] ; then
 		echo "\tFAILED: cp fail"
 		exit 1
@@ -132,29 +121,34 @@ do
 done
 echo "\tPASSED"
 ########################
-return 0
+#return 0
 #echo "step 2-4.."
 #expr 6 % 2
 
 #TODO
-## step 7 ##
-echo "step 9.."
-for i in `ls $dir_for_mv`
+######## step 7 ########
+echo "Step 9:"
+for i in `ls $dir_for_mv/for_cp`
 do
-	echo "$i"
-	#usedir=`expr $i % 2`
+	#echo "$i"
+	usedir=`expr $i % 2`
 	if [ "x$usedir" = "x0" ] ; then
-		echo "$i OK"
-		#for j in `ls `
-		#do
-
-		#done
-
-	else
-		echo "$i not used"
+		#echo "$i use"
+		for j in `ls $dir_for_mv/for_cp/$i` ; do
+			#echo "name= $j"
+			b=`echo "$j" |sed  s/^[0-9]*/""/`
+			#echo "b= $b"
+			name=`echo "$j" |sed  s/"$b"/""/`
+			#echo "name2= $name"
+			delfile=`expr $name % 2`
+			if [ "x$delfile" != "x0" ] ; then
+				rm -rf  $dir_for_mv/for_cp/$i/$j
+			fi
+		done
 	fi
 done
-echo "step 9 PASSED"
+echo "\tPASSED"
+########################
 
 
 
