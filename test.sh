@@ -155,8 +155,4 @@ for i in `ls $dir_for_mv/for_cp` ; do
 done
 echo "\tPASSED"
 ########################
-
-
-
-
-
+exit 0
