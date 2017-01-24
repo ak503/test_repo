@@ -2,7 +2,7 @@
 
 maxDir=5
 maxFiles=1000
-home_dir="$HOME/test_turlupov"
+home_dir="/tmp/test_turlupov"
 step5DirName="for_cp"
 step5DirPath="$home_dir/$step5DirName"
 
