@@ -25,10 +25,11 @@ CheckResult()
 	local stepStatus="$2"
 	local errorMessage="$3"
 	if [ "x$stepStatus" = "x1" -o "x$stepStatus" = "x2" ] ; then
-		echo "\tTEST FAILED. Err code $stepStatus"
+		echo "\tFAIL. Error code: $stepStatus"
+		echo "\nTEST FAILED"
 		exit 1
 	else
-		echo "\tTEST PASSED"
+		echo "\tOK"
 	fi
 }
 
@@ -140,7 +141,7 @@ Step8()
 			rez="$?"
 
 			if [ "x$rez" = "x1" -o "x$rez" = "x2" ] ; then
-				return $rez
+				return "$rez"
 			fi
 		done
 	done
@@ -173,46 +174,47 @@ Step9(){
 }
 
 #create original dirs
-echo "Step 1:\n\tCreate $maxDir dirs in $home_dir"
+echo "Step 1: Create $maxDir dirs in $home_dir..."
 Step1 "$home_dir" "$maxDir"
 CheckResult "1" "$?"
 
 #create files in original dirs
-echo "Step 2_4:\n\tCreate $maxFiles files in each dir"
+echo "Step 2_4: Create $maxFiles files in each dir..."
 Step2_4 "$home_dir" "$maxFiles"
 CheckResult "2_4" "$?"
 
 #copy original dirs to step5Dir
-echo "Step 5:\n\tCopy each dirs from $home_dir to $step5DirPath"
+echo "Step 5: Copy each dirs from $home_dir to $step5DirPath..."
 Step5 "$home_dir" "$maxDir" "$step5DirPath"
 CheckResult "5" "$?"
 
 #move step5Dir to step6Dir (total_dir = "step6Dir/step5Dir/")
-echo "Step 6:\n\tMove $step5DirPath to $step6DirPath"
+echo "Step 6: Move $step5DirPath to $step6DirPath..."
 Step6 "$step5DirPath" "$step6DirPath"
 CheckResult "6" "$?"
 
 #copy original dirs to temp dir
-echo "Step 7.1:\n\tCopy original dirs to temp dir"
+echo "Step 7.1: Copy original dirs to temp dir..."
 Step5 "$home_dir" "$maxDir" "$step71DirPath"
 CheckResult "7.1" "$?"
 
 #delete original dirs
-echo "Step 7.2:\n\tDelete original dirs"
+echo "Step 7.2: Delete original dirs..."
 Step7_2 "$home_dir" "$maxDir"
 CheckResult "7.2" "$?"
 
 #diff files in temp dir and files in step6Dir (total_dir)
-echo "Step 8: diff files from temp dirs and $step6DirPath/$step5DirName"
+echo "Step 8: Diff files from temp dir and from $step6DirPath/$step5DirName..."
 Step8 "$step71DirPath" "$maxDir" "$step6DirPath/$step5DirName"
 CheckResult "8" "$?"
 
 # del fileN1, fileN3, fileN5 ... in dir2, dir4
-echo "Step 9:\n\tDelete some files from $step6DirPath/$step5DirName"
+echo "Step 9: Delete some files from $step6DirPath/$step5DirName..."
 Step9 "$step6DirPath/$step5DirName"
 CheckResult "9" "$?"
 
 # delete tempdir
-rm -r "$step71DirPath" 2>/dev/null
-
+rm -rf "$step71DirPath" 2>/dev/null
+#rm -rf "$home_dir" 2>/dev/null
+echo "\nTEST PASSED"
 exit 0
