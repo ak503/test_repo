@@ -1,0 +1,18 @@
+Package: akapt
+Source: akapt
+Version: 1.0
+Architecture: amd64
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Original-Maintainer: Robert S. Edmonds <edmonds@debian.org>
+Installed-Size: 144
+Section: net
+Priority: optional
+Homepage: http://www.chiark.greenend.org.uk/~ian/adns/
+Description: Asynchronous-capable DNS client library and utilities
+ adns is a resolver library for C (and C++) programs. In contrast with the
+ existing interfaces, gethostbyname et al and libresolv, it can be used in
+ an asynchronous, non-blocking manner. Many queries can be handled
+ simultaneously.
+ .
+ Includes useful test tools and utilities for IP address resolving in
+ logfiles.
