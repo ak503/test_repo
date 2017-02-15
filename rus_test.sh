@@ -7,6 +7,7 @@ repo="$4"
 
 progname="res_test"
 progver="0.1"
+sourcesList="/etc/apt/sources.list"
 
 Version()
 {
@@ -23,6 +24,7 @@ Help()
 	exit 0
 }
 
+##parscmd()
 if [ "x$cmd1" = "x-h"  ]; then
 	Help
 fi
@@ -32,11 +34,20 @@ if [ "x$cmd1" = "x-v"  ]; then
 fi
 
 if [[ "x$cmd1" = "x-file" ]] && [[ "x$cmd2" = "x-repo" ]] && [[ "x$list" != "x" ]] && [[ "x$repo" != "x" ]]; then
-	echo "repo: $repo"
+	echo "repo: $repo" #http://mirror.yandex.ru/debian/
 	echo "file: $list"
 else
 	echo "Wrong!"
 fi
+
+cp "$sourcesList" "$sourcesList""orig"
+#squeeze main non-free contrib
+echo "deb $repo squeeze main non-free contrib" > "$sourcesList"
+echo "deb-src $repo squeeze main non-free contrib" >> "$sourcesList"
+
+apt-get update
+
+cp "$sourcesList""orig" "$sourcesList"
 exit 0
 
 
