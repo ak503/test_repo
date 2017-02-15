@@ -15,11 +15,11 @@ Version()
 }
 Help()
 {
-	echo "Usege:\\n\\trus_test [-file <FILE> -repo <REPO>] [-v] [-h]"
-	echo "\\t-file: file with package list"
-	echo "\\t-repo: addres of repository"
-	echo "\\t-h: show this help"
-	echo "\\t-v: show version"
+	echo -e "Usege:\\n\\trus_test [-file <FILE> -repo <REPO>] [-v] [-h]"
+	echo -e "\\t-file: file with package list"
+	echo -e "\\t-repo: addres of repository"
+	echo -e "\\t-h: show this help"
+	echo -e "\\t-v: show version"
 	exit 0
 }
 
